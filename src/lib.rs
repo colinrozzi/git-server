@@ -405,13 +405,19 @@ fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> H
         // Add some real objects if we don't have any
         ensure_minimal_repo_objects(repo_state);
         
-        // Generate pack file
+        // Generate pack file  
         let pack_data = generate_pack_file(repo_state, &objects_to_send);
-        response_body.extend(pack_data);
+        
+        // Send pack data in side-band format (band 1 = pack data)
+        // For simplicity, we'll send the entire pack in one packet
+        let pack_packet = format_pack_data(&pack_data);
+        response_body.extend(pack_packet);
     } else {
         log("No objects to send, empty pack");
-        // Send empty pack
-        response_body.extend(generate_empty_pack());
+        // Send empty pack in packet format
+        let empty_pack = generate_empty_pack();
+        let pack_packet = format_pack_data(&empty_pack);
+        response_body.extend(pack_packet);
     }
     
     // End with flush packet
@@ -523,6 +529,30 @@ fn format_pkt_line(line: &str) -> Vec<u8> {
     let len_hex = format!("{:04x}", len);
     let mut result = len_hex.into_bytes();
     result.extend(line.as_bytes());
+    result
+}
+
+fn format_pack_data(pack_data: &[u8]) -> Vec<u8> {
+    // In Git Smart HTTP protocol, pack data is sent in packet-line format
+    // Each packet can be up to 65516 bytes (65520 - 4 byte header)
+    let mut result = Vec::new();
+    
+    // For simplicity, send the entire pack in chunks
+    const MAX_PACKET_SIZE: usize = 65516;
+    let mut pos = 0;
+    
+    while pos < pack_data.len() {
+        let chunk_size = std::cmp::min(MAX_PACKET_SIZE, pack_data.len() - pos);
+        let total_size = chunk_size + 4; // +4 for length header
+        
+        // Format as packet-line: 4-byte hex length + data
+        let len_hex = format!("{:04x}", total_size);
+        result.extend(len_hex.as_bytes());
+        result.extend(&pack_data[pos..pos + chunk_size]);
+        
+        pos += chunk_size;
+    }
+    
     result
 }
 
