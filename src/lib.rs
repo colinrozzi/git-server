@@ -368,8 +368,18 @@ fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> H
     let mut missing_objects = Vec::new();
     
     for want_hash in &negotiation.wants {
-        if repo_state.refs.values().any(|h| h == want_hash) {
-            // We have this ref, add it to objects to send
+        // Zero hash means client wants everything (fresh clone)
+        if want_hash == "0000000000000000000000000000000000000000" {
+            log("Client wants full clone (zero hash)");
+            // Send all our refs
+            for (ref_name, ref_hash) in &repo_state.refs {
+                if ref_hash != "0000000000000000000000000000000000000000" {
+                    objects_to_send.push(ref_hash.clone());
+                    log(&format!("Will send ref {}: {}", ref_name, ref_hash));
+                }
+            }
+        } else if repo_state.refs.values().any(|h| h == want_hash) {
+            // We have this specific ref, add it to objects to send
             objects_to_send.push(want_hash.clone());
             log(&format!("Will send object: {}", want_hash));
         } else {
@@ -381,40 +391,55 @@ fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> H
     // Build the response
     let mut response_body = Vec::new();
     
-    // Phase 1: ACK/NAK negotiation
-    if !missing_objects.is_empty() {
-        // Send NAK for missing objects
-        for missing in &missing_objects {
-            let nak_line = format!("NAK {}\n", missing);
-            response_body.extend(format_pkt_line(&nak_line));
+    // Phase 1: Negotiation response
+    // For a first clone, client sends want with zero hashes and no haves
+    // We need to respond with NAK and then send pack
+    
+    if negotiation.haves.is_empty() {
+        // First clone - no negotiation needed, client has nothing
+        // Send NAK to end negotiation phase  
+        response_body.extend(format_pkt_line("NAK\n"));
+    } else {
+        // Handle have/want negotiation
+        let mut found_common = false;
+        
+        for have_hash in &negotiation.haves {
+            if repo_state.refs.values().any(|h| h == have_hash) || repo_state.objects.contains_key(have_hash) {
+                let ack_line = format!("ACK {}\n", have_hash);
+                response_body.extend(format_pkt_line(&ack_line));
+                found_common = true;
+            }
+        }
+        
+        if !found_common {
+            response_body.extend(format_pkt_line("NAK\n"));
         }
     }
     
-    // Send ACKs for objects we have
-    for have_hash in &negotiation.haves {
-        if repo_state.refs.values().any(|h| h == have_hash) || repo_state.objects.contains_key(have_hash) {
-            let ack_line = format!("ACK {}\n", have_hash);
-            response_body.extend(format_pkt_line(&ack_line));
+    // Always send a pack for clone operations
+    log("Generating pack file");
+    
+    // Add some real objects if we don't have any
+    ensure_minimal_repo_objects(repo_state);
+    
+    // If no specific objects requested, send all objects (for fresh clone)
+    if objects_to_send.is_empty() {
+        log("No specific objects requested, sending all objects");
+        for (ref_name, ref_hash) in &repo_state.refs {
+            if ref_hash != "0000000000000000000000000000000000000000" {
+                objects_to_send.push(ref_hash.clone());
+                log(&format!("Added ref {} to pack: {}", ref_name, ref_hash));
+            }
         }
     }
     
-    // If we have objects to send, generate a pack
+    // Generate and send pack file
     if !objects_to_send.is_empty() {
-        log("Generating pack file");
-        
-        // Add some real objects if we don't have any
-        ensure_minimal_repo_objects(repo_state);
-        
-        // Generate pack file  
         let pack_data = generate_pack_file(repo_state, &objects_to_send);
-        
-        // Send pack data in side-band format (band 1 = pack data)
-        // For simplicity, we'll send the entire pack in one packet
         let pack_packet = format_pack_data(&pack_data);
         response_body.extend(pack_packet);
     } else {
-        log("No objects to send, empty pack");
-        // Send empty pack in packet format
+        log("Still no objects, sending empty pack");
         let empty_pack = generate_empty_pack();
         let pack_packet = format_pack_data(&empty_pack);
         response_body.extend(pack_packet);
