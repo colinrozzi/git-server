@@ -6,3 +6,6 @@ save_chain = true
 
 [[handler]]
 type = "runtime"
+
+[[handler]]
+type = "http-framework"
