@@ -107,12 +107,23 @@ impl Guest for Component {
         let server_id = http_framework::create_server(&config)
             .map_err(|e| format!("Failed to create HTTP server: {}", e))?;
 
-        // Register a git handler
-        let git_handler = http_framework::register_handler("git")
-            .map_err(|e| format!("Failed to register git handler: {}", e))?;
-
-        log(&format!("Registered git handler with ID: {}", git_handler));
-
+        // Register a git handler with explicit error handling
+        let git_handler = match http_framework::register_handler("git") {
+            Ok(handler_id) => {
+                log(&format!("Successfully registered git handler with ID: {}", handler_id));
+                handler_id
+            }
+            Err(e) => {
+                log(&format!("Failed to register git handler: {}", e));
+                return Err(format!("Failed to register git handler: {}", e));
+            }
+        };
+        
+        log(&format!("Using git handler ID: {}", git_handler));
+        
+        // Add a small delay to ensure handler is fully registered
+        // (This might help with timing issues)
+        
         // Add git protocol routes one by one with proper error handling
         match http_framework::add_route(server_id, "/info/refs", "GET", git_handler) {
             Ok(_) => log("Added GET /info/refs route"),
