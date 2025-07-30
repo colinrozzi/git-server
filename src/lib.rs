@@ -157,6 +157,66 @@ impl Default for GitRepoState {
     }
 }
 
+// Utility function to create minimal repository objects
+fn ensure_minimal_repo_objects(repo_state: &mut GitRepoState) {
+    // If we don't have any real objects, create some basic ones
+    if repo_state.objects.is_empty() {
+        log("Creating minimal repository objects");
+        
+        // Create a simple blob (README file)
+        let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
+        let readme_hash = calculate_git_hash("blob", readme_content);
+        repo_state.objects.insert(
+            readme_hash.clone(),
+            GitObject::Blob {
+                content: readme_content.to_vec(),
+            },
+        );
+        log(&format!("Created blob: {}", readme_hash));
+        
+        // Create a tree containing the README
+        let tree_entries = vec![TreeEntry {
+            mode: "100644".to_string(),
+            name: "README.md".to_string(),
+            hash: readme_hash,
+        }];
+        let tree_content = serialize_tree_object(&tree_entries);
+        let tree_hash = calculate_git_hash("tree", &tree_content);
+        repo_state.objects.insert(
+            tree_hash.clone(),
+            GitObject::Tree {
+                entries: tree_entries,
+            },
+        );
+        log(&format!("Created tree: {}", tree_hash));
+        
+        // Create a commit pointing to the tree
+        let commit_message = "Initial commit";
+        let author = "Git Server <git-server@example.com>";
+        let committer = author;
+        
+        let commit_content = serialize_commit_object(&tree_hash, &[], author, committer, commit_message);
+        let commit_hash = calculate_git_hash("commit", &commit_content);
+        repo_state.objects.insert(
+            commit_hash.clone(),
+            GitObject::Commit {
+                tree: tree_hash,
+                parents: vec![],
+                author: author.to_string(),
+                committer: committer.to_string(),
+                message: commit_message.to_string(),
+            },
+        );
+        log(&format!("Created commit: {}", commit_hash));
+        
+        // Update refs to point to the new commit
+        repo_state.refs.insert("refs/heads/main".to_string(), commit_hash.clone());
+        log(&format!("Updated refs/heads/main to: {}", commit_hash));
+        
+        log(&format!("Created {} objects with proper SHA-1 hashes", repo_state.objects.len()));
+    }
+}
+
 struct Component;
 
 impl Guest for Component {
@@ -169,7 +229,7 @@ impl Guest for Component {
         log(&format!("Git server actor ID: {}", &self_id));
 
         // Parse existing state or create new
-        let repo_state = match state {
+        let mut repo_state = match state {
             Some(bytes) => {
                 serde_json::from_slice::<GitRepoState>(&bytes)
                     .unwrap_or_else(|_| {
@@ -183,6 +243,9 @@ impl Guest for Component {
             }
         };
 
+        // Ensure we have some basic objects from the start
+        ensure_minimal_repo_objects(&mut repo_state);
+        
         log(&format!("Git repository '{}' initialized with {} refs and {} objects", 
                      repo_state.repo_name, 
                      repo_state.refs.len(),
@@ -761,64 +824,7 @@ fn parse_upload_pack_request(body: &[u8]) -> UploadPackRequest {
     }
 }
 
-fn ensure_minimal_repo_objects(repo_state: &mut GitRepoState) {
-    // If we don't have any real objects, create some basic ones
-    if repo_state.objects.is_empty() {
-        log("Creating minimal repository objects");
-        
-        // Create a simple blob (README file)
-        let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
-        let readme_hash = calculate_git_hash("blob", readme_content);
-        repo_state.objects.insert(
-            readme_hash.clone(),
-            GitObject::Blob {
-                content: readme_content.to_vec(),
-            },
-        );
-        
-        // Create a tree containing the README
-        let tree_entries = vec![TreeEntry {
-            mode: "100644".to_string(),
-            name: "README.md".to_string(),
-            hash: readme_hash,
-        }];
-        let tree_content = serialize_tree_object(&tree_entries);
-        let tree_hash = calculate_git_hash("tree", &tree_content);
-        repo_state.objects.insert(
-            tree_hash.clone(),
-            GitObject::Tree {
-                entries: tree_entries,
-            },
-        );
-        
-        // Create a commit pointing to the tree
-        let commit_message = "Initial commit\n";
-        let author = "Git Server <git-server@example.com>";
-        let timestamp = "1609459200 +0000"; // 2021-01-01
-        
-        let commit_content = format!(
-            "tree {}\nauthor {} {}\ncommitter {} {}\n\n{}",
-            tree_hash, author, timestamp, author, timestamp, commit_message
-        );
-        
-        let commit_hash = calculate_git_hash("commit", commit_content.as_bytes());
-        repo_state.objects.insert(
-            commit_hash.clone(),
-            GitObject::Commit {
-                tree: tree_hash,
-                parents: vec![],
-                author: author.to_string(),
-                committer: author.to_string(),
-                message: commit_message.to_string(),
-            },
-        );
-        
-        // Update refs to point to the new commit
-        repo_state.refs.insert("refs/heads/main".to_string(), commit_hash);
-        
-        log(&format!("Created {} objects", repo_state.objects.len()));
-    }
-}
+
 
 fn generate_pack_file(repo_state: &GitRepoState, _object_hashes: &[String]) -> Vec<u8> {
     log("Generating pack file");
