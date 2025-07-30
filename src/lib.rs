@@ -111,22 +111,55 @@ impl Guest for Component {
         let git_handler = http_framework::register_handler("git")
             .map_err(|e| format!("Failed to register git handler: {}", e))?;
 
-        // Add git protocol routes
-        let routes = vec![
-            // Git Smart HTTP Protocol endpoints
-            ("/info/refs", "GET", git_handler),
-            ("/git-upload-pack", "POST", git_handler),
-            ("/git-receive-pack", "POST", git_handler),
-            // Debug endpoints
-            ("/", "GET", git_handler),
-            ("/refs", "GET", git_handler),
-            ("/objects", "GET", git_handler),
-        ];
+        log(&format!("Registered git handler with ID: {}", git_handler));
 
-        for (path, method, handler) in routes {
-            http_framework::add_route(server_id, path, method, handler)
-                .map_err(|e| format!("Failed to add {} {} route: {}", method, path, e))?;
-            log(&format!("Added {} {} route", method, path));
+        // Add git protocol routes one by one with proper error handling
+        match http_framework::add_route(server_id, "/info/refs", "GET", git_handler) {
+            Ok(_) => log("Added GET /info/refs route"),
+            Err(e) => {
+                log(&format!("Failed to add /info/refs route: {}", e));
+                return Err(format!("Failed to add /info/refs route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/git-upload-pack", "POST", git_handler) {
+            Ok(_) => log("Added POST /git-upload-pack route"),
+            Err(e) => {
+                log(&format!("Failed to add /git-upload-pack route: {}", e));
+                return Err(format!("Failed to add /git-upload-pack route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/git-receive-pack", "POST", git_handler) {
+            Ok(_) => log("Added POST /git-receive-pack route"),
+            Err(e) => {
+                log(&format!("Failed to add /git-receive-pack route: {}", e));
+                return Err(format!("Failed to add /git-receive-pack route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/", "GET", git_handler) {
+            Ok(_) => log("Added GET / route"),
+            Err(e) => {
+                log(&format!("Failed to add / route: {}", e));
+                return Err(format!("Failed to add / route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/refs", "GET", git_handler) {
+            Ok(_) => log("Added GET /refs route"),
+            Err(e) => {
+                log(&format!("Failed to add /refs route: {}", e));
+                return Err(format!("Failed to add /refs route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/objects", "GET", git_handler) {
+            Ok(_) => log("Added GET /objects route"),
+            Err(e) => {
+                log(&format!("Failed to add /objects route: {}", e));
+                return Err(format!("Failed to add /objects route: {}", e));
+            }
         }
 
         // Start the server
