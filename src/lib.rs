@@ -319,19 +319,77 @@ fn handle_receive_pack_discovery(repo_state: &GitRepoState) -> HttpResponse {
     )
 }
 
-fn handle_upload_pack(_repo_state: &mut GitRepoState, _request: &HttpRequest) -> HttpResponse {
+fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> HttpResponse {
     log("Handling upload-pack request (clone/fetch data transfer)");
     
-    // For now, return a minimal response
-    // TODO: Parse want/have negotiation from request body
-    // TODO: Generate pack file with requested objects
+    // Parse the request body to extract want/have lines
+    let request_body = request.body.as_ref().map(|b| b.as_slice()).unwrap_or(&[]);
+    let negotiation = parse_upload_pack_request(request_body);
     
-    let response_body = b"0000"; // Empty pack for now
+    log(&format!("Client wants {} objects, has {} objects", 
+                 negotiation.wants.len(), 
+                 negotiation.haves.len()));
+    
+    // For each want, check if we have it and determine what to send
+    let mut objects_to_send = Vec::new();
+    let mut missing_objects = Vec::new();
+    
+    for want_hash in &negotiation.wants {
+        if repo_state.refs.values().any(|h| h == want_hash) {
+            // We have this ref, add it to objects to send
+            objects_to_send.push(want_hash.clone());
+            log(&format!("Will send object: {}", want_hash));
+        } else {
+            missing_objects.push(want_hash.clone());
+            log(&format!("Missing object: {}", want_hash));
+        }
+    }
+    
+    // Build the response
+    let mut response_body = Vec::new();
+    
+    // Phase 1: ACK/NAK negotiation
+    if !missing_objects.is_empty() {
+        // Send NAK for missing objects
+        for missing in &missing_objects {
+            let nak_line = format!("NAK {}\n", missing);
+            response_body.extend(format_pkt_line(&nak_line));
+        }
+    }
+    
+    // Send ACKs for objects we have
+    for have_hash in &negotiation.haves {
+        if repo_state.refs.values().any(|h| h == have_hash) || repo_state.objects.contains_key(have_hash) {
+            let ack_line = format!("ACK {}\n", have_hash);
+            response_body.extend(format_pkt_line(&ack_line));
+        }
+    }
+    
+    // If we have objects to send, generate a pack
+    if !objects_to_send.is_empty() {
+        log("Generating pack file");
+        
+        // Add some real objects if we don't have any
+        ensure_minimal_repo_objects(repo_state);
+        
+        // Generate pack file
+        let pack_data = generate_pack_file(repo_state, &objects_to_send);
+        response_body.extend(pack_data);
+    } else {
+        log("No objects to send, empty pack");
+        // Send empty pack
+        response_body.extend(generate_empty_pack());
+    }
+    
+    // End with flush packet
+    response_body.extend(b"0000");
+    
+    log(&format!("Upload-pack response: {} bytes", response_body.len()));
     
     create_response(
         200,
         "application/x-git-upload-pack-result",
-        response_body
+        &response_body
     )
 }
 
@@ -433,6 +491,272 @@ fn format_pkt_line(line: &str) -> Vec<u8> {
     let mut result = len_hex.into_bytes();
     result.extend(line.as_bytes());
     result
+}
+
+// Pack Protocol Implementation
+
+#[derive(Debug)]
+struct UploadPackRequest {
+    wants: Vec<String>,
+    haves: Vec<String>,
+    capabilities: Vec<String>,
+}
+
+fn parse_upload_pack_request(body: &[u8]) -> UploadPackRequest {
+    let mut wants = Vec::new();
+    let mut haves = Vec::new();
+    let mut capabilities = Vec::new();
+    
+    let body_str = String::from_utf8_lossy(body);
+    log(&format!("Parsing upload-pack request: {} bytes", body.len()));
+    
+    // Parse packet-line format
+    let mut pos = 0;
+    while pos < body.len() {
+        // Read packet length (4 hex chars)
+        if pos + 4 > body.len() {
+            break;
+        }
+        
+        let len_str = String::from_utf8_lossy(&body[pos..pos + 4]);
+        let packet_len = match u16::from_str_radix(&len_str, 16) {
+            Ok(len) => len as usize,
+            Err(_) => break,
+        };
+        
+        if packet_len == 0 {
+            // Flush packet, move to next
+            pos += 4;
+            continue;
+        }
+        
+        if pos + packet_len > body.len() {
+            break;
+        }
+        
+        // Extract packet content (excluding 4-byte length prefix)
+        let packet_content = String::from_utf8_lossy(&body[pos + 4..pos + packet_len]);
+        let line = packet_content.trim();
+        
+        if line.starts_with("want ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let hash = parts[1].to_string();
+                wants.push(hash);
+                
+                // Parse capabilities from first want line
+                if parts.len() > 2 && wants.len() == 1 {
+                    for cap in &parts[2..] {
+                        capabilities.push(cap.to_string());
+                    }
+                }
+            }
+        } else if line.starts_with("have ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                haves.push(parts[1].to_string());
+            }
+        }
+        
+        pos += packet_len;
+    }
+    
+    log(&format!("Parsed: {} wants, {} haves, {} capabilities", 
+                 wants.len(), haves.len(), capabilities.len()));
+    
+    UploadPackRequest {
+        wants,
+        haves,
+        capabilities,
+    }
+}
+
+fn ensure_minimal_repo_objects(repo_state: &mut GitRepoState) {
+    // If we don't have any real objects, create some basic ones
+    if repo_state.objects.is_empty() {
+        log("Creating minimal repository objects");
+        
+        // Create a simple blob (README file)
+        let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
+        let readme_hash = calculate_git_hash("blob", readme_content);
+        repo_state.objects.insert(
+            readme_hash.clone(),
+            GitObject::Blob {
+                content: readme_content.to_vec(),
+            },
+        );
+        
+        // Create a tree containing the README
+        let tree_entries = vec![TreeEntry {
+            mode: "100644".to_string(),
+            name: "README.md".to_string(),
+            hash: readme_hash,
+        }];
+        let tree_content = serialize_tree_object(&tree_entries);
+        let tree_hash = calculate_git_hash("tree", &tree_content);
+        repo_state.objects.insert(
+            tree_hash.clone(),
+            GitObject::Tree {
+                entries: tree_entries,
+            },
+        );
+        
+        // Create a commit pointing to the tree
+        let commit_message = "Initial commit\n";
+        let author = "Git Server <git-server@example.com>";
+        let timestamp = "1609459200 +0000"; // 2021-01-01
+        
+        let commit_content = format!(
+            "tree {}\nauthor {} {}\ncommitter {} {}\n\n{}",
+            tree_hash, author, timestamp, author, timestamp, commit_message
+        );
+        
+        let commit_hash = calculate_git_hash("commit", commit_content.as_bytes());
+        repo_state.objects.insert(
+            commit_hash.clone(),
+            GitObject::Commit {
+                tree: tree_hash,
+                parents: vec![],
+                author: author.to_string(),
+                committer: author.to_string(),
+                message: commit_message.to_string(),
+            },
+        );
+        
+        // Update refs to point to the new commit
+        repo_state.refs.insert("refs/heads/main".to_string(), commit_hash);
+        
+        log(&format!("Created {} objects", repo_state.objects.len()));
+    }
+}
+
+fn generate_pack_file(repo_state: &GitRepoState, _object_hashes: &[String]) -> Vec<u8> {
+    log("Generating pack file");
+    
+    // For now, generate a very simple pack file with all objects
+    // A real implementation would only include requested objects and their dependencies
+    
+    let mut pack_data = Vec::new();
+    
+    // Pack file header: "PACK" + version (2) + number of objects
+    pack_data.extend(b"PACK");
+    pack_data.extend(&2u32.to_be_bytes()); // Version 2
+    pack_data.extend(&(repo_state.objects.len() as u32).to_be_bytes());
+    
+    // Add objects to pack
+    for (hash, obj) in &repo_state.objects {
+        let (obj_type, obj_data) = match obj {
+            GitObject::Blob { content } => (1u8, content.clone()), // OBJ_BLOB = 1
+            GitObject::Tree { entries } => (2u8, serialize_tree_object(entries)), // OBJ_TREE = 2
+            GitObject::Commit { tree, parents, author, committer, message } => {
+                let commit_data = serialize_commit_object(tree, parents, author, committer, message);
+                (3u8, commit_data) // OBJ_COMMIT = 3
+            }
+            GitObject::Tag { .. } => (4u8, vec![]), // OBJ_TAG = 4, not implemented
+        };
+        
+        // Object header: type and size
+        let size = obj_data.len();
+        let mut header = vec![];
+        
+        // Pack object header format (simplified)
+        let type_size_byte = (obj_type << 4) | ((size & 0x0F) as u8);
+        header.push(type_size_byte);
+        
+        // Add size continuation bytes if needed
+        let mut remaining_size = size >> 4;
+        while remaining_size > 0 {
+            let mut byte = (remaining_size & 0x7F) as u8;
+            remaining_size >>= 7;
+            if remaining_size > 0 {
+                byte |= 0x80; // Continuation bit
+            }
+            header.push(byte);
+        }
+        
+        pack_data.extend(header);
+        pack_data.extend(obj_data);
+        
+        log(&format!("Added object {} ({} bytes)", hash, size));
+    }
+    
+    // TODO: Add SHA-1 checksum of pack file
+    // For now, add dummy checksum
+    pack_data.extend(&[0u8; 20]);
+    
+    log(&format!("Generated pack file: {} bytes", pack_data.len()));
+    pack_data
+}
+
+fn generate_empty_pack() -> Vec<u8> {
+    let mut pack_data = Vec::new();
+    
+    // Empty pack: "PACK" + version (2) + 0 objects + checksum
+    pack_data.extend(b"PACK");
+    pack_data.extend(&2u32.to_be_bytes()); // Version 2
+    pack_data.extend(&0u32.to_be_bytes()); // 0 objects
+    pack_data.extend(&[0u8; 20]); // Dummy checksum
+    
+    pack_data
+}
+
+fn serialize_tree_object(entries: &[TreeEntry]) -> Vec<u8> {
+    let mut data = Vec::new();
+    
+    for entry in entries {
+        data.extend(entry.mode.as_bytes());
+        data.push(b' ');
+        data.extend(entry.name.as_bytes());
+        data.push(0); // Null terminator
+        
+        // Convert hex hash to binary (20 bytes)
+        if entry.hash.len() == 40 {
+            for i in (0..40).step_by(2) {
+                if let Ok(byte) = u8::from_str_radix(&entry.hash[i..i+2], 16) {
+                    data.push(byte);
+                }
+            }
+        }
+    }
+    
+    data
+}
+
+fn serialize_commit_object(tree: &str, parents: &[String], author: &str, committer: &str, message: &str) -> Vec<u8> {
+    let mut content = String::new();
+    
+    content.push_str(&format!("tree {}\n", tree));
+    
+    for parent in parents {
+        content.push_str(&format!("parent {}\n", parent));
+    }
+    
+    // For simplicity, use fixed timestamp
+    let timestamp = "1609459200 +0000";
+    content.push_str(&format!("author {} {}\n", author, timestamp));
+    content.push_str(&format!("committer {} {}\n", committer, timestamp));
+    content.push('\n');
+    content.push_str(message);
+    
+    content.into_bytes()
+}
+
+fn calculate_git_hash(obj_type: &str, content: &[u8]) -> String {
+    // Git hash = SHA-1("<type> <size>\0<content>")
+    // For simplicity, we'll generate a deterministic but fake hash
+    // A real implementation would use SHA-1
+    
+    use std::hash::{Hash, Hasher};
+    
+    let header = format!("{} {}", obj_type, content.len());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    
+    header.hash(&mut hasher);
+    content.hash(&mut hasher);
+    
+    // Generate a 40-character hex string that looks like a git hash
+    let hash_value = hasher.finish();
+    format!("{:016x}{:016x}{:08x}", hash_value, hash_value.wrapping_mul(31), content.len())
 }
 
 bindings::export!(Component with_types_in bindings);
