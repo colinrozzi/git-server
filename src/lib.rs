@@ -585,9 +585,6 @@ fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> H
     // Always send a pack for clone operations
     log("Generating pack file");
     
-    // Add some real objects if we don't have any
-    ensure_minimal_repo_objects(repo_state);
-    
     // If no specific objects requested, send all objects (for fresh clone)
     if objects_to_send.is_empty() {
         log("No specific objects requested, sending all objects");
