@@ -4,6 +4,8 @@ mod bindings;
 use bindings::exports::theater::simple::actor::Guest;
 use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlers;
 use bindings::theater::simple::runtime::log;
+use bindings::theater::simple::http_framework::{self};
+use bindings::theater::simple::http_types::ServerConfig;
 use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, MiddlewareResult};
 use bindings::exports::theater::simple::http_handlers::{HandlerId, WebsocketMessage};
 use serde::{Deserialize, Serialize};
@@ -93,6 +95,45 @@ impl Guest for Component {
                      repo_state.repo_name, 
                      repo_state.refs.len(),
                      repo_state.objects.len()));
+
+        // Set up HTTP server for git protocol
+        let config = ServerConfig {
+            port: Some(8080),
+            host: Some("0.0.0.0".to_string()),
+            tls_config: None,
+        };
+
+        // Create the server
+        let server_id = http_framework::create_server(&config)
+            .map_err(|e| format!("Failed to create HTTP server: {}", e))?;
+
+        // Register a git handler
+        let git_handler = http_framework::register_handler("git")
+            .map_err(|e| format!("Failed to register git handler: {}", e))?;
+
+        // Add git protocol routes
+        let routes = vec![
+            // Git Smart HTTP Protocol endpoints
+            ("/info/refs", "GET", git_handler),
+            ("/git-upload-pack", "POST", git_handler),
+            ("/git-receive-pack", "POST", git_handler),
+            // Debug endpoints
+            ("/", "GET", git_handler),
+            ("/refs", "GET", git_handler),
+            ("/objects", "GET", git_handler),
+        ];
+
+        for (path, method, handler) in routes {
+            http_framework::add_route(server_id, path, method, handler)
+                .map_err(|e| format!("Failed to add {} {} route: {}", method, path, e))?;
+            log(&format!("Added {} {} route", method, path));
+        }
+
+        // Start the server
+        let actual_port = http_framework::start_server(server_id)
+            .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+
+        log(&format!("Git server started on port {}", actual_port));
 
         // Serialize state back
         let new_state = serde_json::to_vec(&repo_state)
