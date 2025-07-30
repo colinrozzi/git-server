@@ -910,11 +910,26 @@ fn compress_zlib(data: &[u8]) -> Vec<u8> {
         pos += chunk_size;
     }
     
-    // Adler-32 checksum (simplified - just use a constant)
-    // Real implementation would calculate proper Adler-32
-    compressed.extend(&[0x00, 0x00, 0x00, 0x01]);
+    // Adler-32 checksum of original data
+    let adler32 = calculate_adler32(data);
+    compressed.extend(&adler32.to_be_bytes());
     
     compressed
+}
+
+fn calculate_adler32(data: &[u8]) -> u32 {
+    // Adler-32 checksum algorithm (RFC 1950)
+    const ADLER32_BASE: u32 = 65521;
+    
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    
+    for &byte in data {
+        a = (a + byte as u32) % ADLER32_BASE;
+        b = (b + a) % ADLER32_BASE;
+    }
+    
+    (b << 16) | a
 }
 
 bindings::export!(Component with_types_in bindings);
