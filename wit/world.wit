@@ -2,5 +2,8 @@ package component:git-server;
 
 world default {
     import theater:simple/runtime;
+    import theater:simple/http-framework;
+
     export theater:simple/actor;
+    export theater:simple/http-handlers;
 }
