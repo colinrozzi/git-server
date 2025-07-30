@@ -1,3 +1,95 @@
+// Simple SHA-1 implementation for Git pack checksums
+fn sha1_hash(data: &[u8]) -> [u8; 20] {
+    let mut h = [
+        0x67452301u32,
+        0xEFCDAB89u32,
+        0x98BADCFEu32,
+        0x10325476u32,
+        0xC3D2E1F0u32,
+    ];
+    
+    let original_len = data.len();
+    let mut message = data.to_vec();
+    
+    // Append the '1' bit (plus zero padding to make it a byte)
+    message.push(0x80);
+    
+    // Append zeros until length ≡ 448 (mod 512)
+    while (message.len() % 64) != 56 {
+        message.push(0);
+    }
+    
+    // Append original length in bits as 64-bit big-endian integer
+    let bit_len = (original_len as u64) * 8;
+    message.extend(&bit_len.to_be_bytes());
+    
+    // Process message in 512-bit chunks
+    for chunk in message.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        
+        // Break chunk into sixteen 32-bit big-endian words
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1], 
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        
+        // Extend the words
+        for i in 16..80 {
+            w[i] = left_rotate(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+        }
+        
+        // Initialize hash value for this chunk
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        
+        // Main loop
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                60..=79 => (b ^ c ^ d, 0xCA62C1D6),
+                _ => unreachable!(),
+            };
+            
+            let temp = left_rotate(a, 5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            
+            e = d;
+            d = c;
+            c = left_rotate(b, 30);
+            b = a;
+            a = temp;
+        }
+        
+        // Add this chunk's hash to result
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    
+    // Convert to bytes
+    let mut result = [0u8; 20];
+    for (i, &word) in h.iter().enumerate() {
+        let bytes = word.to_be_bytes();
+        result[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
+    }
+    
+    result
+}
+
+fn left_rotate(value: u32, bits: u32) -> u32 {
+    (value << bits) | (value >> (32 - bits))
+}
+
 #[allow(warnings)]
 mod bindings;
 
@@ -856,20 +948,18 @@ fn serialize_commit_object(tree: &str, parents: &[String], author: &str, committ
 
 fn calculate_git_hash(obj_type: &str, content: &[u8]) -> String {
     // Git hash = SHA-1("<type> <size>\0<content>")
-    // For simplicity, we'll generate a deterministic but fake hash
-    // A real implementation would use SHA-1
+    let header = format!("{} {}\0", obj_type, content.len());
     
-    use std::hash::{Hash, Hasher};
+    let mut full_content = Vec::new();
+    full_content.extend(header.as_bytes());
+    full_content.extend(content);
     
-    let header = format!("{} {}", obj_type, content.len());
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let hash_bytes = sha1_hash(&full_content);
     
-    header.hash(&mut hasher);
-    content.hash(&mut hasher);
-    
-    // Generate a 40-character hex string that looks like a git hash
-    let hash_value = hasher.finish();
-    format!("{:016x}{:016x}{:08x}", hash_value, hash_value.wrapping_mul(31), content.len())
+    // Convert to hex string
+    hash_bytes.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>()
 }
 
 fn calculate_sha1_checksum(data: &[u8]) -> Vec<u8> {
@@ -947,28 +1037,9 @@ fn calculate_adler32(data: &[u8]) -> u32 {
 }
 
 fn calculate_pack_sha1_checksum(pack_data: &[u8]) -> [u8; 20] {
-    // Calculate a deterministic SHA-1-like checksum for the pack file
-    // In a real implementation, this would use actual SHA-1
-    use std::hash::{Hash, Hasher};
-    
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    pack_data.hash(&mut hasher);
-    let hash_value = hasher.finish();
-    
-    // Create a 20-byte checksum from the hash
-    let mut checksum = [0u8; 20];
-    
-    // Spread the 64-bit hash across 20 bytes in a deterministic way
-    for i in 0..20 {
-        let byte_index = i % 8;
-        let shift = byte_index * 8;
-        checksum[i] = ((hash_value >> shift) & 0xFF) as u8;
-        
-        // Add some variation based on position to make it more realistic
-        checksum[i] = checksum[i].wrapping_add((i as u8).wrapping_mul(37));
-    }
-    
-    checksum
+    // Calculate SHA-1 checksum of the pack file content
+    // This should be the SHA-1 of everything before the checksum itself
+    sha1_hash(pack_data)
 }
 
 bindings::export!(Component with_types_in bindings);
