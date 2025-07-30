@@ -2,9 +2,10 @@
 mod bindings;
 
 use bindings::exports::theater::simple::actor::Guest;
-use bindings::exports::theater::simple::http_framework::Guest as HttpFramework;
+use bindings::exports::theater::simple::http_handlers::Guest as HttpHandlers;
 use bindings::theater::simple::runtime::log;
-use bindings::theater::simple::types::{HttpRequest, HttpResponse, HttpStatus};
+use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, MiddlewareResult};
+use bindings::exports::theater::simple::http_handlers::{HandlerId, WebsocketMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -101,12 +102,12 @@ impl Guest for Component {
     }
 }
 
-impl HttpFramework for Component {
+impl HttpHandlers for Component {
     fn handle_request(
         state: Option<Vec<u8>>,
-        params: (HttpRequest,),
+        params: (HandlerId, HttpRequest),
     ) -> Result<(Option<Vec<u8>>, (HttpResponse,)), String> {
-        let (request,) = params;
+        let (_handler_id, request) = params;
         
         log(&format!("HTTP {} {}", request.method, request.uri));
         
@@ -144,7 +145,7 @@ impl HttpFramework for Component {
             // 404 for everything else
             _ => {
                 log(&format!("Unknown route: {} {}", request.method, request.uri));
-                create_response(HttpStatus::NotFound, "text/plain", "Not Found".as_bytes())
+                create_response(404, "text/plain", "Not Found".as_bytes())
             }
         };
 
@@ -153,6 +154,43 @@ impl HttpFramework for Component {
             .map_err(|e| format!("Failed to serialize updated state: {}", e))?;
 
         Ok((Some(new_state), (response,)))
+    }
+
+    fn handle_middleware(
+        state: Option<Vec<u8>>,
+        params: (HandlerId, HttpRequest),
+    ) -> Result<(Option<Vec<u8>>, (MiddlewareResult,)), String> {
+        let (_handler_id, request) = params;
+        // For now, just pass through all requests
+        let middleware_result = MiddlewareResult {
+            proceed: true,
+            request,
+        };
+        Ok((state, (middleware_result,)))
+    }
+
+    fn handle_websocket_connect(
+        state: Option<Vec<u8>>,
+        params: (HandlerId, u64, String, Option<String>),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        // Git doesn't use WebSockets, so just accept but do nothing
+        Ok((state,))
+    }
+
+    fn handle_websocket_message(
+        state: Option<Vec<u8>>,
+        params: (HandlerId, u64, WebsocketMessage),
+    ) -> Result<(Option<Vec<u8>>, (Vec<WebsocketMessage>,)), String> {
+        // Git doesn't use WebSockets, return empty response
+        Ok((state, (vec![],)))
+    }
+
+    fn handle_websocket_disconnect(
+        state: Option<Vec<u8>>,
+        params: (HandlerId, u64),
+    ) -> Result<(Option<Vec<u8>>,), String> {
+        // Git doesn't use WebSockets, just acknowledge
+        Ok((state,))
     }
 }
 
@@ -175,7 +213,7 @@ fn handle_info_refs(repo_state: &GitRepoState, request: &HttpRequest) -> HttpRes
         }
         _ => {
             log(&format!("Unknown service parameter: {:?}", service));
-            create_response(HttpStatus::BadRequest, "text/plain", "Bad Request: missing or invalid service parameter".as_bytes())
+            create_response(400, "text/plain", "Bad Request: missing or invalid service parameter".as_bytes())
         }
     }
 }
@@ -201,7 +239,7 @@ fn handle_upload_pack_discovery(repo_state: &GitRepoState) -> HttpResponse {
     log(&format!("Upload-pack discovery response: {} bytes", response_body.len()));
     
     create_response(
-        HttpStatus::Ok,
+        200,
         "application/x-git-upload-pack-advertisement",
         &response_body
     )
@@ -234,13 +272,13 @@ fn handle_receive_pack_discovery(repo_state: &GitRepoState) -> HttpResponse {
     log(&format!("Receive-pack discovery response: {} bytes", response_body.len()));
     
     create_response(
-        HttpStatus::Ok,
+        200,
         "application/x-git-receive-pack-advertisement",
         &response_body
     )
 }
 
-fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> HttpResponse {
+fn handle_upload_pack(_repo_state: &mut GitRepoState, _request: &HttpRequest) -> HttpResponse {
     log("Handling upload-pack request (clone/fetch data transfer)");
     
     // For now, return a minimal response
@@ -250,13 +288,13 @@ fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> H
     let response_body = b"0000"; // Empty pack for now
     
     create_response(
-        HttpStatus::Ok,
+        200,
         "application/x-git-upload-pack-result",
         response_body
     )
 }
 
-fn handle_receive_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> HttpResponse {
+fn handle_receive_pack(_repo_state: &mut GitRepoState, _request: &HttpRequest) -> HttpResponse {
     log("Handling receive-pack request (push data transfer)");
     
     // For now, return a minimal response
@@ -266,7 +304,7 @@ fn handle_receive_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> 
     let response_body = b"0000"; // Empty response for now
     
     create_response(
-        HttpStatus::Ok,
+        200,
         "application/x-git-receive-pack-result",
         response_body
     )
@@ -283,7 +321,7 @@ fn handle_repo_info(repo_state: &GitRepoState) -> HttpResponse {
         repo_state.objects.len()
     );
     
-    create_response(HttpStatus::Ok, "text/plain", info.as_bytes())
+    create_response(200, "text/plain", info.as_bytes())
 }
 
 fn handle_list_refs(repo_state: &GitRepoState) -> HttpResponse {
@@ -294,7 +332,7 @@ fn handle_list_refs(repo_state: &GitRepoState) -> HttpResponse {
         refs_list.push_str(&format!("{}: {}\n", ref_name, commit_hash));
     }
     
-    create_response(HttpStatus::Ok, "text/plain", refs_list.as_bytes())
+    create_response(200, "text/plain", refs_list.as_bytes())
 }
 
 fn handle_list_objects(repo_state: &GitRepoState) -> HttpResponse {
@@ -314,20 +352,21 @@ fn handle_list_objects(repo_state: &GitRepoState) -> HttpResponse {
         objects_list.push_str("No objects in repository\n");
     }
     
-    create_response(HttpStatus::Ok, "text/plain", objects_list.as_bytes())
+    create_response(200, "text/plain", objects_list.as_bytes())
 }
 
 // Utility Functions
 
-fn create_response(status: HttpStatus, content_type: &str, body: &[u8]) -> HttpResponse {
-    let mut headers = HashMap::new();
-    headers.insert("Content-Type".to_string(), content_type.to_string());
-    headers.insert("Content-Length".to_string(), body.len().to_string());
+fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResponse {
+    let headers = vec![
+        ("Content-Type".to_string(), content_type.to_string()),
+        ("Content-Length".to_string(), body.len().to_string()),
+    ];
     
     HttpResponse {
         status,
         headers,
-        body: body.to_vec(),
+        body: Some(body.to_vec()),
     }
 }
 
