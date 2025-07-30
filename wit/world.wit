@@ -1,0 +1,6 @@
+package component:git-server;
+
+world default {
+    import theater:simple/runtime;
+    export theater:simple/actor;
+}

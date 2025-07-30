@@ -1,0 +1,8 @@
+name = "git-server"
+version = "0.1.0"
+component = "./target/wasm32-unknown-unknown/release/git_server.wasm"
+description = "A basic Theater actor"
+save_chain = true
+
+[[handler]]
+type = "runtime"
