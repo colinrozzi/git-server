@@ -823,22 +823,69 @@ fn parse_upload_pack_request(body: &[u8]) -> UploadPackRequest {
 
 
 
-fn generate_pack_file(repo_state: &GitRepoState, _object_hashes: &[String]) -> Vec<u8> {
+// Helper function to add an object and all its dependencies to the set
+fn add_object_with_dependencies(repo_state: &GitRepoState, hash: &str, objects: &mut std::collections::HashSet<String>) {
+    if objects.contains(hash) {
+        return; // Already processed
+    }
+    
+    if let Some(obj) = repo_state.objects.get(hash) {
+        objects.insert(hash.to_string());
+        
+        match obj {
+            GitObject::Commit { tree, parents, .. } => {
+                // Add tree and all parent commits
+                add_object_with_dependencies(repo_state, tree, objects);
+                for parent in parents {
+                    add_object_with_dependencies(repo_state, parent, objects);
+                }
+            }
+            GitObject::Tree { entries } => {
+                // Add all blobs and subtrees referenced by this tree
+                for entry in entries {
+                    add_object_with_dependencies(repo_state, &entry.hash, objects);
+                }
+            }
+            GitObject::Tag { object, .. } => {
+                // Add the object this tag points to
+                add_object_with_dependencies(repo_state, object, objects);
+            }
+            GitObject::Blob { .. } => {
+                // Blobs don't reference other objects
+            }
+        }
+    }
+}
+
+fn generate_pack_file(repo_state: &GitRepoState, object_hashes: &[String]) -> Vec<u8> {
     log("Generating pack file");
     
-    // For now, generate a very simple pack file with all objects
-    // A real implementation would only include requested objects and their dependencies
+    // Collect only the requested objects and their dependencies
+    let mut objects_to_include = std::collections::HashSet::new();
+    
+    // Add requested objects and their dependencies
+    for hash in object_hashes {
+        add_object_with_dependencies(repo_state, hash, &mut objects_to_include);
+    }
+    
+    // If no specific objects requested, include all objects
+    if objects_to_include.is_empty() {
+        for hash in repo_state.objects.keys() {
+            objects_to_include.insert(hash.clone());
+        }
+    }
     
     let mut pack_data = Vec::new();
     
     // Pack file header: "PACK" + version (2) + number of objects
     pack_data.extend(b"PACK");
     pack_data.extend(&2u32.to_be_bytes()); // Version 2
-    pack_data.extend(&(repo_state.objects.len() as u32).to_be_bytes());
+    pack_data.extend(&(objects_to_include.len() as u32).to_be_bytes());
     
     // Add objects to pack
-    for (hash, obj) in &repo_state.objects {
-        let (obj_type, obj_data) = match obj {
+    for hash in &objects_to_include {
+        if let Some(obj) = repo_state.objects.get(hash) {
+            let (obj_type, obj_data) = match obj {
             GitObject::Blob { content } => (1u8, content.clone()), // OBJ_BLOB = 1
             GitObject::Tree { entries } => (2u8, serialize_tree_object(entries)), // OBJ_TREE = 2
             GitObject::Commit { tree, parents, author, committer, message } => {
@@ -882,7 +929,8 @@ fn generate_pack_file(repo_state: &GitRepoState, _object_hashes: &[String]) -> V
         let compressed_data = compress_zlib(&obj_data);
         pack_data.extend(compressed_data);
         
-        log(&format!("Added object {} ({} bytes)", hash, size));
+            log(&format!("Added object {} ({} bytes)", hash, size));
+        }
     }
     
     // Add SHA-1 checksum of pack file content (everything before the checksum)
