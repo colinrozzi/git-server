@@ -547,8 +547,8 @@ fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> H
         response_body.extend(empty_pack);
     }
     
-    // End with flush packet
-    response_body.extend(b"0000");
+    // Don't add flush packet after pack data - Git doesn't expect it
+    // The pack data itself is the end of the response
     
     log(&format!("Upload-pack response: {} bytes", response_body.len()));
     
