@@ -157,14 +157,19 @@ impl Default for GitRepoState {
     }
 }
 
-// Utility function to create minimal repository objects
+// Utility function to create minimal repository objects with enhanced debugging
 fn ensure_minimal_repo_objects(repo_state: &mut GitRepoState) {
     // If we don't have any real objects, create some basic ones
     if repo_state.objects.is_empty() {
-        log("Creating minimal repository objects");
+        log("Creating minimal repository objects with debug info");
+        
+        // Run SHA-1 diagnostic tests first
+        test_sha1_against_git();
         
         // Create a simple blob (README file)
         let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
+        log(&format!("README content: {:?}", String::from_utf8_lossy(readme_content)));
+        
         let readme_hash = calculate_git_hash("blob", readme_content);
         repo_state.objects.insert(
             readme_hash.clone(),
@@ -172,15 +177,18 @@ fn ensure_minimal_repo_objects(repo_state: &mut GitRepoState) {
                 content: readme_content.to_vec(),
             },
         );
-        log(&format!("Created blob: {}", readme_hash));
+        log(&format!("Created blob: {} (content hash should match)", readme_hash));
         
         // Create a tree containing the README
         let tree_entries = vec![TreeEntry {
             mode: "100644".to_string(),
             name: "README.md".to_string(),
-            hash: readme_hash,
+            hash: readme_hash.clone(),
         }];
+        
         let tree_content = serialize_tree_object(&tree_entries);
+        log(&format!("Tree content bytes: {:?}", tree_content));
+        
         let tree_hash = calculate_git_hash("tree", &tree_content);
         repo_state.objects.insert(
             tree_hash.clone(),
@@ -188,33 +196,124 @@ fn ensure_minimal_repo_objects(repo_state: &mut GitRepoState) {
                 entries: tree_entries,
             },
         );
-        log(&format!("Created tree: {}", tree_hash));
+        log(&format!("Created tree: {} (should reference blob {})", tree_hash, readme_hash));
         
-        // Create a commit pointing to the tree
-        let commit_message = "Initial commit";
+        // Create a commit with exact Git format
         let author = "Git Server <git-server@example.com>";
-        let committer = author;
+        let commit_content_raw = serialize_commit_object(
+            &tree_hash, 
+            &[], 
+            author, 
+            author, 
+            "Initial commit"
+        );
         
-        let commit_content = serialize_commit_object(&tree_hash, &[], author, committer, commit_message);
-        let commit_hash = calculate_git_hash("commit", &commit_content);
+        log(&format!("Commit content: {:?}", String::from_utf8_lossy(&commit_content_raw)));
+        
+        let commit_hash = calculate_git_hash("commit", &commit_content_raw);
         repo_state.objects.insert(
             commit_hash.clone(),
             GitObject::Commit {
-                tree: tree_hash,
+                tree: tree_hash.clone(),
                 parents: vec![],
                 author: author.to_string(),
-                committer: committer.to_string(),
-                message: commit_message.to_string(),
+                committer: author.to_string(),
+                message: "Initial commit".to_string(),
             },
         );
-        log(&format!("Created commit: {}", commit_hash));
         
-        // Update refs to point to the new commit
+        // Update refs
         repo_state.refs.insert("refs/heads/main".to_string(), commit_hash.clone());
-        log(&format!("Updated refs/heads/main to: {}", commit_hash));
+        
+        log(&format!("=== FINAL OBJECT HASHES ==="));
+        log(&format!("Blob (README.md): {}", readme_hash));
+        log(&format!("Tree (root): {}", tree_hash));
+        log(&format!("Commit (main): {}", commit_hash));
+        log(&format!("Refs: {:?}", repo_state.refs));
+        
+        // Verify object references
+        validate_repository_objects(repo_state);
         
         log(&format!("Created {} objects with proper SHA-1 hashes", repo_state.objects.len()));
     }
+}
+
+// SHA-1 diagnostic test function
+fn test_sha1_against_git() {
+    log("=== SHA-1 DIAGNOSTIC TEST ===");
+    
+    // Test 1: Simple blob
+    let blob_content = b"hello world";
+    let blob_hash = calculate_git_hash("blob", blob_content); 
+    // Should match: echo "hello world" | git hash-object --stdin
+    // Expected: 95d09f2b10159347eece71399a7e2e907ea3df4f
+    log(&format!("Blob 'hello world': {} (expect: 95d09f2b10159347eece71399a7e2e907ea3df4f)", blob_hash));
+    
+    // Test 2: Empty tree
+    let empty_tree_hash = calculate_git_hash("tree", &[]);
+    // Expected: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+    log(&format!("Empty tree: {} (expect: 4b825dc642cb6eb9a060e54bf8d69288fbee4904)", empty_tree_hash));
+    
+    log("=== END SHA-1 DIAGNOSTIC ===");
+}
+
+// Repository validation function
+fn validate_repository_objects(repo_state: &GitRepoState) {
+    log("=== VERIFYING OBJECT REFERENCES ===");
+    let mut errors = Vec::new();
+    
+    // Check that all refs point to existing objects
+    for (ref_name, hash) in &repo_state.refs {
+        if !repo_state.objects.contains_key(hash) {
+            errors.push(format!("Ref {} points to missing object {}", ref_name, hash));
+        }
+    }
+    
+    // Check that all object references are valid
+    for (hash, obj) in &repo_state.objects {
+        match obj {
+            GitObject::Commit { tree, parents, .. } => {
+                if !repo_state.objects.contains_key(tree) {
+                    errors.push(format!("Commit {} references missing tree {}", hash, tree));
+                } else {
+                    log(&format!("✅ Commit {} references valid tree {}", hash, tree));
+                }
+                for parent in parents {
+                    if !repo_state.objects.contains_key(parent) {
+                        errors.push(format!("Commit {} references missing parent {}", hash, parent));
+                    }
+                }
+            }
+            GitObject::Tree { entries } => {
+                for entry in entries {
+                    if !repo_state.objects.contains_key(&entry.hash) {
+                        errors.push(format!("Tree {} entry '{}' references missing object {}", 
+                                          hash, entry.name, entry.hash));
+                    } else {
+                        log(&format!("✅ Tree entry '{}' references valid object {}", entry.name, entry.hash));
+                    }
+                }
+            }
+            GitObject::Tag { object, .. } => {
+                if !repo_state.objects.contains_key(object) {
+                    errors.push(format!("Tag {} references missing object {}", hash, object));
+                }
+            }
+            GitObject::Blob { .. } => {
+                // Blobs don't reference other objects
+            }
+        }
+    }
+    
+    if errors.is_empty() {
+        log("✅ Repository state validation passed");
+    } else {
+        log(&format!("❌ Repository state has {} validation errors", errors.len()));
+        for error in &errors {
+            log(&format!("  {}", error));
+        }
+    }
+    log("=== END VERIFICATION ===");
 }
 
 struct Component;
@@ -823,37 +922,63 @@ fn parse_upload_pack_request(body: &[u8]) -> UploadPackRequest {
 
 
 
-// Helper function to add an object and all its dependencies to the set
+// Enhanced helper function to add an object and all its dependencies to the set
 fn add_object_with_dependencies(repo_state: &GitRepoState, hash: &str, objects: &mut std::collections::HashSet<String>) {
     if objects.contains(hash) {
         return; // Already processed
     }
     
+    // Validate hash format
+    if hash.len() != 40 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        log(&format!("Warning: Invalid hash format: {}", hash));
+        return;
+    }
+    
     if let Some(obj) = repo_state.objects.get(hash) {
         objects.insert(hash.to_string());
+        log(&format!("Added object {} to pack", hash));
         
         match obj {
             GitObject::Commit { tree, parents, .. } => {
-                // Add tree and all parent commits
-                add_object_with_dependencies(repo_state, tree, objects);
+                // Validate tree exists
+                if !repo_state.objects.contains_key(tree) {
+                    log(&format!("Warning: Commit {} references missing tree {}", hash, tree));
+                } else {
+                    add_object_with_dependencies(repo_state, tree, objects);
+                }
+                
+                // Validate parents exist  
                 for parent in parents {
-                    add_object_with_dependencies(repo_state, parent, objects);
+                    if !repo_state.objects.contains_key(parent) {
+                        log(&format!("Warning: Commit {} references missing parent {}", hash, parent));
+                    } else {
+                        add_object_with_dependencies(repo_state, parent, objects);
+                    }
                 }
             }
             GitObject::Tree { entries } => {
-                // Add all blobs and subtrees referenced by this tree
+                // Validate all tree entries exist
                 for entry in entries {
-                    add_object_with_dependencies(repo_state, &entry.hash, objects);
+                    if !repo_state.objects.contains_key(&entry.hash) {
+                        log(&format!("Warning: Tree {} references missing object {}", hash, entry.hash));
+                    } else {
+                        add_object_with_dependencies(repo_state, &entry.hash, objects);
+                    }
                 }
             }
             GitObject::Tag { object, .. } => {
-                // Add the object this tag points to
-                add_object_with_dependencies(repo_state, object, objects);
+                if !repo_state.objects.contains_key(object) {
+                    log(&format!("Warning: Tag {} references missing object {}", hash, object));
+                } else {
+                    add_object_with_dependencies(repo_state, object, objects);
+                }
             }
             GitObject::Blob { .. } => {
                 // Blobs don't reference other objects
             }
         }
+    } else {
+        log(&format!("Warning: Object not found in repository: {}", hash));
     }
 }
 
@@ -959,19 +1084,32 @@ fn generate_empty_pack() -> Vec<u8> {
 fn serialize_tree_object(entries: &[TreeEntry]) -> Vec<u8> {
     let mut data = Vec::new();
     
-    for entry in entries {
+    // Sort entries by name (Git requirement for consistent hashing)
+    let mut sorted_entries = entries.to_vec();
+    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
+    
+    for entry in &sorted_entries {
+        // Mode as string (no leading zeros for 100644)
         data.extend(entry.mode.as_bytes());
-        data.push(b' ');
+        data.push(b' '); // Space separator
+        
+        // Filename
         data.extend(entry.name.as_bytes());
         data.push(0); // Null terminator
         
-        // Convert hex hash to binary (20 bytes)
+        // Hash as 20 binary bytes (not hex string)
         if entry.hash.len() == 40 {
             for i in (0..40).step_by(2) {
                 if let Ok(byte) = u8::from_str_radix(&entry.hash[i..i+2], 16) {
                     data.push(byte);
+                } else {
+                    // Handle invalid hex - this should not happen with proper hashes
+                    log(&format!("Warning: invalid hex in hash {}", entry.hash));
+                    break;
                 }
             }
+        } else {
+            log(&format!("Warning: invalid hash length for {}: {}", entry.name, entry.hash));
         }
     }
     
