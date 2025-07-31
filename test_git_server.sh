@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Make script executable
-chmod +x "$0"
-
 # Git Server Test Script
 echo "🚀 Testing Git Server Actor"
 
