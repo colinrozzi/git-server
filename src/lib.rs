@@ -255,6 +255,55 @@ fn test_sha1_against_git() {
     log(&format!("Empty tree: {} (expect: 4b825dc642cb6eb9a060e54bf8d69288fbee4904)", empty_tree_hash));
     
     log("=== END SHA-1 DIAGNOSTIC ===");
+    
+    // Add detailed commit object debugging
+    debug_commit_object_format();
+}
+
+// Add this function to debug the exact commit object format
+fn debug_commit_object_format() {
+    log("=== COMMIT OBJECT DEBUG ===");
+    
+    // Recreate the exact same objects
+    let tree_hash = "b0841aa3ac9b0dbe7aee598869498290a5a74a01";
+    let author = "Git Server <git-server@example.com>";
+    let timestamp = "1609459200 +0000";
+    
+    // Create commit content exactly as we do
+    let mut commit_content = String::new();
+    commit_content.push_str(&format!("tree {}\n", tree_hash));
+    commit_content.push_str(&format!("author {} {}\n", author, timestamp));
+    commit_content.push_str(&format!("committer {} {}\n", author, timestamp));
+    commit_content.push('\n');
+    commit_content.push_str("Initial commit");
+    
+    log(&format!("Commit content string: '{}'", commit_content));
+    log(&format!("Commit content bytes: {:?}", commit_content.as_bytes()));
+    log(&format!("Commit content length: {}", commit_content.len()));
+    
+    // Calculate hash
+    let commit_hash = calculate_git_hash("commit", commit_content.as_bytes());
+    log(&format!("Our calculated hash: {}", commit_hash));
+    
+    // Create the Git header that goes into the hash calculation
+    let header = format!("commit {}\0", commit_content.len());
+    log(&format!("Git object header: '{}'", header));
+    log(&format!("Full hash input: header + content = {} + {}", header.len(), commit_content.len()));
+    
+    // Show the exact bytes that get hashed
+    let mut full_hash_input = Vec::new();
+    full_hash_input.extend(header.as_bytes());
+    full_hash_input.extend(commit_content.as_bytes());
+    log(&format!("Full SHA-1 input bytes: {:?}", full_hash_input));
+    
+    // Manual SHA-1 calculation
+    let manual_hash = sha1_hash(&full_hash_input);
+    let manual_hash_hex = manual_hash.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    log(&format!("Manual SHA-1 result: {}", manual_hash_hex));
+    
+    log("=== END COMMIT OBJECT DEBUG ===");
 }
 
 // Repository validation function
@@ -1014,6 +1063,7 @@ fn generate_pack_file(repo_state: &GitRepoState, object_hashes: &[String]) -> Ve
             GitObject::Blob { content } => (1u8, content.clone()), // OBJ_BLOB = 1
             GitObject::Tree { entries } => (2u8, serialize_tree_object(entries)), // OBJ_TREE = 2
             GitObject::Commit { tree, parents, author, committer, message } => {
+                // CRITICAL FIX: Use the EXACT same author/committer as when hash was calculated
                 let commit_data = serialize_commit_object(tree, parents, author, committer, message);
                 (3u8, commit_data) // OBJ_COMMIT = 3
             }
