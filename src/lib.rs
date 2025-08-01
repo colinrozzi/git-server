@@ -1,94 +1,6 @@
-// Simple SHA-1 implementation for Git pack checksums
-fn sha1_hash(data: &[u8]) -> [u8; 20] {
-    let mut h = [
-        0x67452301u32,
-        0xEFCDAB89u32,
-        0x98BADCFEu32,
-        0x10325476u32,
-        0xC3D2E1F0u32,
-    ];
-    
-    let original_len = data.len();
-    let mut message = data.to_vec();
-    
-    // Append the '1' bit (plus zero padding to make it a byte)
-    message.push(0x80);
-    
-    // Append zeros until length ≡ 448 (mod 512)
-    while (message.len() % 64) != 56 {
-        message.push(0);
-    }
-    
-    // Append original length in bits as 64-bit big-endian integer
-    let bit_len = (original_len as u64) * 8;
-    message.extend(&bit_len.to_be_bytes());
-    
-    // Process message in 512-bit chunks
-    for chunk in message.chunks_exact(64) {
-        let mut w = [0u32; 80];
-        
-        // Break chunk into sixteen 32-bit big-endian words
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1], 
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        
-        // Extend the words
-        for i in 16..80 {
-            w[i] = left_rotate(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
-        }
-        
-        // Initialize hash value for this chunk
-        let [mut a, mut b, mut c, mut d, mut e] = h;
-        
-        // Main loop
-        for i in 0..80 {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5A827999),
-                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
-                60..=79 => (b ^ c ^ d, 0xCA62C1D6),
-                _ => unreachable!(),
-            };
-            
-            let temp = left_rotate(a, 5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(w[i]);
-            
-            e = d;
-            d = c;
-            c = left_rotate(b, 30);
-            b = a;
-            a = temp;
-        }
-        
-        // Add this chunk's hash to result
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-    }
-    
-    // Convert to bytes
-    let mut result = [0u8; 20];
-    for (i, &word) in h.iter().enumerate() {
-        let bytes = word.to_be_bytes();
-        result[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
-    }
-    
-    result
-}
 
-fn left_rotate(value: u32, bits: u32) -> u32 {
-    (value << bits) | (value >> (32 - bits))
-}
+
+mod utils;
 
 #[allow(warnings)]
 mod bindings;
@@ -102,6 +14,9 @@ use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, Middlewar
 use bindings::exports::theater::simple::http_handlers::{HandlerId, WebsocketMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+use utils::hash::{sha1_hash, calculate_git_hash};
+use utils::compression::compress_zlib;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct GitRepoState {
@@ -1185,21 +1100,7 @@ fn serialize_commit_object(tree: &str, parents: &[String], author: &str, committ
     content.into_bytes()
 }
 
-fn calculate_git_hash(obj_type: &str, content: &[u8]) -> String {
-    // Git hash = SHA-1("<type> <size>\0<content>")
-    let header = format!("{} {}\0", obj_type, content.len());
-    
-    let mut full_content = Vec::new();
-    full_content.extend(header.as_bytes());
-    full_content.extend(content);
-    
-    let hash_bytes = sha1_hash(&full_content);
-    
-    // Convert to hex string
-    hash_bytes.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>()
-}
+
 
 fn calculate_sha1_checksum(data: &[u8]) -> Vec<u8> {
     // For simplicity, use a deterministic but fake checksum
@@ -1218,62 +1119,7 @@ fn calculate_sha1_checksum(data: &[u8]) -> Vec<u8> {
     checksum
 }
 
-fn compress_zlib(data: &[u8]) -> Vec<u8> {
-    // Simple zlib compression implementation
-    // For a basic implementation, we'll create a minimal zlib wrapper
-    
-    let mut compressed = Vec::new();
-    
-    // zlib header (RFC 1950)
-    // CMF (Compression Method and flags): 0x78 (deflate, 32K window)
-    // FLG (flags): 0x9C (check bits to make header checksum correct)
-    compressed.extend(&[0x78, 0x9C]);
-    
-    // For simplicity, use "stored" (uncompressed) deflate blocks
-    // This is valid deflate format but not compressed
-    
-    let mut pos = 0;
-    while pos < data.len() {
-        let chunk_size = std::cmp::min(65535, data.len() - pos);
-        let is_final = pos + chunk_size >= data.len();
-        
-        // Block header: BFINAL (1 bit) + BTYPE (2 bits) = 00000000 or 00000001
-        // BTYPE 00 = stored (uncompressed)
-        compressed.push(if is_final { 0x01 } else { 0x00 });
-        
-        // LEN (length of data) - little endian
-        compressed.extend(&(chunk_size as u16).to_le_bytes());
-        
-        // NLEN (one's complement of LEN) - little endian  
-        compressed.extend(&(!(chunk_size as u16)).to_le_bytes());
-        
-        // Raw data
-        compressed.extend(&data[pos..pos + chunk_size]);
-        
-        pos += chunk_size;
-    }
-    
-    // Adler-32 checksum of original data
-    let adler32 = calculate_adler32(data);
-    compressed.extend(&adler32.to_be_bytes());
-    
-    compressed
-}
 
-fn calculate_adler32(data: &[u8]) -> u32 {
-    // Adler-32 checksum algorithm (RFC 1950)
-    const ADLER32_BASE: u32 = 65521;
-    
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
-    
-    for &byte in data {
-        a = (a + byte as u32) % ADLER32_BASE;
-        b = (b + a) % ADLER32_BASE;
-    }
-    
-    (b << 16) | a
-}
 
 fn calculate_pack_sha1_checksum(pack_data: &[u8]) -> [u8; 20] {
     // Calculate SHA-1 checksum of the pack file content
