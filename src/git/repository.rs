@@ -1,5 +1,5 @@
 use super::objects::{GitObject, TreeEntry};
-use crate::utils::hash::calculate_git_hash;
+use crate::utils::hash::{calculate_git_hash, calculate_git_hash_debug};
 use crate::utils::logging::safe_log as log;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -260,6 +260,137 @@ impl GitRepoState {
         log("=== END VERIFICATION ===");
         
         errors
+    }
+
+    /// Enhanced debugging for object validation issues
+    pub fn debug_object_consistency(&self) {
+        log("=== DETAILED OBJECT CONSISTENCY CHECK ===");
+        
+        for (stored_hash, obj) in &self.objects {
+            log(&format!("Checking object: {}", stored_hash));
+            
+            // Re-serialize the object and recalculate its hash
+            let (recalculated_hash, serialized_content) = match obj {
+                GitObject::Blob { content } => {
+                    let hash = calculate_git_hash("blob", content);
+                    (hash, content.clone())
+                }
+                GitObject::Tree { entries } => {
+                    let serialized = serialize_tree_object(entries);
+                    let hash = calculate_git_hash("tree", &serialized);
+                    (hash, serialized)
+                }
+                GitObject::Commit { tree, parents, author, committer, message } => {
+                    let serialized = serialize_commit_object(tree, parents, author, committer, message);
+                    let hash = calculate_git_hash("commit", &serialized);
+                    (hash, serialized)
+                }
+                GitObject::Tag { .. } => {
+                    // Tags not implemented yet
+                    continue;
+                }
+            };
+            
+            if stored_hash != &recalculated_hash {
+                log(&format!("❌ HASH MISMATCH for object {}", stored_hash));
+                log(&format!("   Stored hash:      {}", stored_hash));
+                log(&format!("   Recalculated:     {}", recalculated_hash));
+                log(&format!("   Object type:      {}", obj.object_type()));
+                log(&format!("   Serialized size:  {} bytes", serialized_content.len()));
+                
+                // Show first 100 bytes of serialized content for debugging
+                let preview = if serialized_content.len() > 100 {
+                    format!("{:?}...", &serialized_content[..100])
+                } else {
+                    format!("{:?}", serialized_content)
+                };
+                log(&format!("   Serialized preview: {}", preview));
+                
+                // For commits, show the exact string format
+                if let GitObject::Commit { .. } = obj {
+                    if let Ok(commit_str) = String::from_utf8(serialized_content.clone()) {
+                        log(&format!("   Commit string: '{}'", commit_str));
+                    }
+                }
+            } else {
+                log(&format!("✅ Hash consistent for {} ({})", obj.object_type(), stored_hash));
+            }
+        }
+        
+        log("=== END OBJECT CONSISTENCY CHECK ===");
+    }
+    
+    /// Enhanced version of ensure_minimal_objects with detailed debugging
+    pub fn ensure_minimal_objects_debug(&mut self) {
+        if !self.objects.is_empty() {
+            log("Objects already exist, running consistency checks...");
+            self.debug_object_consistency();
+            return;
+        }
+        
+        log("Creating minimal repository objects with enhanced debugging");
+        
+        // Test our hash implementation first
+        self.test_sha1_against_git();
+        
+        // Create objects with detailed logging
+        log("=== CREATING REPOSITORY OBJECTS ===");
+        
+        // 1. Create README blob
+        let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
+        log(&format!("Creating README blob with {} bytes", readme_content.len()));
+        log(&format!("README content: {:?}", String::from_utf8_lossy(readme_content)));
+        
+        let readme_hash = calculate_git_hash_debug("blob", readme_content);
+        let readme_blob = GitObject::Blob {
+            content: readme_content.to_vec(),
+        };
+        self.add_object(readme_hash.clone(), readme_blob);
+        
+        // 2. Create tree
+        let tree_entries = vec![TreeEntry::blob("README.md".to_string(), readme_hash.clone())];
+        let tree_content = serialize_tree_object(&tree_entries);
+        log(&format!("Creating tree with {} entries, {} bytes", tree_entries.len(), tree_content.len()));
+        log(&format!("Tree entries: {:?}", tree_entries));
+        log(&format!("Tree content bytes: {:?}", tree_content));
+        
+        let tree_hash = calculate_git_hash_debug("tree", &tree_content);
+        let tree_obj = GitObject::Tree {
+            entries: tree_entries,
+        };
+        self.add_object(tree_hash.clone(), tree_obj);
+        
+        // 3. Create commit
+        let author = "Git Server <git-server@example.com>";
+        let commit_content = serialize_commit_object(&tree_hash, &[], author, author, "Initial commit");
+        log(&format!("Creating commit with {} bytes", commit_content.len()));
+        log(&format!("Commit content: {:?}", String::from_utf8_lossy(&commit_content)));
+        
+        let commit_hash = calculate_git_hash_debug("commit", &commit_content);
+        let commit_obj = GitObject::Commit {
+            tree: tree_hash.clone(),
+            parents: vec![],
+            author: author.to_string(),
+            committer: author.to_string(),
+            message: "Initial commit".to_string(),
+        };
+        self.add_object(commit_hash.clone(), commit_obj);
+        
+        // 4. Update refs
+        self.update_ref("refs/heads/main".to_string(), commit_hash.clone());
+        
+        log("=== FINAL VERIFICATION ===");
+        log(&format!("Created {} objects:", self.objects.len()));
+        log(&format!("  Blob (README.md): {}", readme_hash));
+        log(&format!("  Tree (root):      {}", tree_hash));
+        log(&format!("  Commit (main):    {}", commit_hash));
+        log(&format!("Refs: {:?}", self.refs));
+        
+        // Run all consistency checks
+        self.debug_object_consistency();
+        self.validate();
+        
+        log(&format!("Repository initialization complete with {} objects", self.objects.len()));
     }
 }
 

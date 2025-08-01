@@ -1,110 +1,54 @@
-/// Simple SHA-1 implementation for Git pack checksums and object hashing
+use sha1::{Sha1, Digest};
+
+/// Calculate SHA-1 hash using the sha1 crate
 pub fn sha1_hash(data: &[u8]) -> [u8; 20] {
-    let mut h = [
-        0x67452301u32,
-        0xEFCDAB89u32,
-        0x98BADCFEu32,
-        0x10325476u32,
-        0xC3D2E1F0u32,
-    ];
-    
-    let original_len = data.len();
-    let mut message = data.to_vec();
-    
-    // Append the '1' bit (plus zero padding to make it a byte)
-    message.push(0x80);
-    
-    // Append zeros until length ≡ 448 (mod 512)
-    while (message.len() % 64) != 56 {
-        message.push(0);
-    }
-    
-    // Append original length in bits as 64-bit big-endian integer
-    let bit_len = (original_len as u64) * 8;
-    message.extend(&bit_len.to_be_bytes());
-    
-    // Process message in 512-bit chunks
-    for chunk in message.chunks_exact(64) {
-        let mut w = [0u32; 80];
-        
-        // Break chunk into sixteen 32-bit big-endian words
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1], 
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        
-        // Extend the words
-        for i in 16..80 {
-            w[i] = left_rotate(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
-        }
-        
-        // Initialize hash value for this chunk
-        let [mut a, mut b, mut c, mut d, mut e] = h;
-        
-        // Main loop
-        for i in 0..80 {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5A827999),
-                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
-                60..=79 => (b ^ c ^ d, 0xCA62C1D6),
-                _ => unreachable!(),
-            };
-            
-            let temp = left_rotate(a, 5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(w[i]);
-            
-            e = d;
-            d = c;
-            c = left_rotate(b, 30);
-            b = a;
-            a = temp;
-        }
-        
-        // Add this chunk's hash to result
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-    }
-    
-    // Convert to bytes
-    let mut result = [0u8; 20];
-    for (i, &word) in h.iter().enumerate() {
-        let bytes = word.to_be_bytes();
-        result[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
-    }
-    
-    result
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    hasher.finalize().into()
 }
 
 /// Calculate Git object hash in the standard format: SHA-1("<type> <size>\0<content>")
 pub fn calculate_git_hash(obj_type: &str, content: &[u8]) -> String {
     let header = format!("{} {}\0", obj_type, content.len());
     
-    let mut full_content = Vec::new();
-    full_content.extend(header.as_bytes());
-    full_content.extend(content);
+    let mut hasher = Sha1::new();
+    hasher.update(header.as_bytes());
+    hasher.update(content);
     
-    let hash_bytes = sha1_hash(&full_content);
+    let hash_bytes = hasher.finalize();
     
-    // Convert to hex string
-    hash_bytes.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>()
+    // Convert to hex string using hex crate
+    hex::encode(hash_bytes)
 }
 
-/// Left rotate operation for SHA-1
-fn left_rotate(value: u32, bits: u32) -> u32 {
-    (value << bits) | (value >> (32 - bits))
+/// Calculate SHA-1 hash and return as hex string
+pub fn sha1_hex(data: &[u8]) -> String {
+    let hash_bytes = sha1_hash(data);
+    hex::encode(hash_bytes)
+}
+
+/// Debug utility: Calculate git hash with detailed logging
+pub fn calculate_git_hash_debug(obj_type: &str, content: &[u8]) -> String {
+    let header = format!("{} {}\0", obj_type, content.len());
+    
+    // Log the exact input for debugging
+    crate::utils::logging::safe_log(&format!(
+        "Git hash calculation: type='{}', content_len={}, header='{}'",
+        obj_type, content.len(), header.replace('\0', "\\0")
+    ));
+    
+    let mut hasher = Sha1::new();
+    hasher.update(header.as_bytes());
+    hasher.update(content);
+    
+    let hash_bytes = hasher.finalize();
+    let hash_hex = hex::encode(hash_bytes);
+    
+    crate::utils::logging::safe_log(&format!(
+        "Git hash result: {}", hash_hex
+    ));
+    
+    hash_hex
 }
 
 #[cfg(test)]
@@ -127,10 +71,29 @@ mod tests {
     #[test]
     fn test_sha1_basic() {
         // Test the basic SHA-1 implementation
-        let result = sha1_hash(b"abc");
-        let hex_result: String = result.iter()
-            .map(|b| format!("{:02x}", b))
-            .collect();
-        assert_eq!(hex_result, "a9993e364706816aba3e25717850c26c9cd0d89d");
+        let result = sha1_hex(b"abc");
+        assert_eq!(result, "a9993e364706816aba3e25717850c26c9cd0d89d");
+    }
+    
+    #[test]
+    fn test_sha1_consistency() {
+        // Test that our hash function is consistent
+        let data = b"test data for consistency check";
+        let hash1 = sha1_hash(data);
+        let hash2 = sha1_hash(data);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_git_hash_format() {
+        // Test that git hashes include the proper header
+        let content = b"test content";
+        let hash = calculate_git_hash("blob", content);
+        
+        // Verify this produces the same result as manual calculation
+        let manual_input = format!("blob {}\0test content", content.len());
+        let manual_hash = sha1_hex(manual_input.as_bytes());
+        
+        assert_eq!(hash, manual_hash);
     }
 }

@@ -49,7 +49,7 @@ impl Guest for Component {
         };
 
         // Ensure we have some basic objects from the start
-        repo_state.ensure_minimal_objects();
+        repo_state.ensure_minimal_objects_debug();
         
         log(&format!("Git repository '{}' initialized with {} refs and {} objects", 
                      repo_state.repo_name, 
