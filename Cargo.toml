@@ -14,6 +14,8 @@ wit-bindgen-rt = { version = "0.43.0", features = ["bitflags"] }
 sha1 = "0.10"
 # Add hex encoding/decoding utility (very lightweight)
 hex = "0.4"
+# High-performance zlib compression for Git pack files
+flate2 = { version = "1.1", features = ["zlib-rs"], default-features = false }
 
 [package.metadata.component]
 package = "component:git-server"
