@@ -1,48 +1,28 @@
-/// Simple zlib compression implementation for Git pack files
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use std::io::Write;
+
+/// High-performance zlib compression for Git pack files using flate2
 /// 
 /// Git requires object data in pack files to be compressed with zlib (RFC 1950).
-/// This implementation creates valid zlib streams using uncompressed deflate blocks
-/// for simplicity while maintaining compatibility.
+/// This implementation uses the flate2 library with the high-performance zlib-rs backend
+/// for maximum speed while maintaining full Git compatibility.
 pub fn compress_zlib(data: &[u8]) -> Vec<u8> {
-    let mut compressed = Vec::new();
+    // Use flate2's ZlibEncoder with default compression level
+    // The zlib-rs backend provides excellent performance
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     
-    // zlib header (RFC 1950)
-    // CMF (Compression Method and flags): 0x78 (deflate, 32K window)
-    // FLG (flags): 0x9C (check bits to make header checksum correct)
-    compressed.extend(&[0x78, 0x9C]);
+    // Write all data to the encoder
+    encoder.write_all(data).expect("Writing to ZlibEncoder should never fail");
     
-    // For simplicity, use "stored" (uncompressed) deflate blocks
-    // This is valid deflate format but not compressed
-    
-    let mut pos = 0;
-    while pos < data.len() {
-        let chunk_size = std::cmp::min(65535, data.len() - pos);
-        let is_final = pos + chunk_size >= data.len();
-        
-        // Block header: BFINAL (1 bit) + BTYPE (2 bits) = 00000000 or 00000001
-        // BTYPE 00 = stored (uncompressed)
-        compressed.push(if is_final { 0x01 } else { 0x00 });
-        
-        // LEN (length of data) - little endian
-        compressed.extend(&(chunk_size as u16).to_le_bytes());
-        
-        // NLEN (one's complement of LEN) - little endian  
-        compressed.extend(&(!(chunk_size as u16)).to_le_bytes());
-        
-        // Raw data
-        compressed.extend(&data[pos..pos + chunk_size]);
-        
-        pos += chunk_size;
-    }
-    
-    // Adler-32 checksum of original data
-    let adler32 = calculate_adler32(data);
-    compressed.extend(&adler32.to_be_bytes());
-    
-    compressed
+    // Finish compression and return the compressed bytes
+    encoder.finish().expect("Finishing ZlibEncoder should never fail")
 }
 
-/// Calculate Adler-32 checksum as required by zlib format (RFC 1950)
+/// Calculate Adler-32 checksum (now mainly for compatibility/testing)
+/// 
+/// Note: flate2 handles checksums internally, but we keep this function
+/// for any external code that might need Adler-32 calculation
 pub fn calculate_adler32(data: &[u8]) -> u32 {
     const ADLER32_BASE: u32 = 65521;
     
@@ -62,8 +42,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_compress_zlib_basic() {
+        let data = b"Hello, World!";
+        let compressed = compress_zlib(data);
+        
+        // Should produce valid zlib data (starts with zlib header)
+        assert!(compressed.len() > data.len() + 6); // header + data + checksum
+        
+        // Test that it's valid zlib by decompressing
+        use flate2::read::ZlibDecoder;
+        use std::io::Read;
+        
+        let mut decoder = ZlibDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        
+        assert_eq!(decompressed, data);
+    }
+    
+    #[test]
+    fn test_compress_zlib_empty() {
+        let compressed = compress_zlib(&[]);
+        
+        // Even empty data should compress to something
+        assert!(compressed.len() > 0);
+        
+        // Verify it decompresses correctly
+        use flate2::read::ZlibDecoder;
+        use std::io::Read;
+        
+        let mut decoder = ZlibDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        
+        assert_eq!(decompressed, Vec::<u8>::new());
+    }
+    
+    #[test]
+    fn test_compress_zlib_large_data() {
+        // Test with larger data to ensure good compression
+        let data = b"This is a test string that should compress well because it has repetitive content. ".repeat(100);
+        let compressed = compress_zlib(&data);
+        
+        // Should actually compress (be smaller than original)
+        assert!(compressed.len() < data.len());
+        
+        // Verify correctness
+        use flate2::read::ZlibDecoder;
+        use std::io::Read;
+        
+        let mut decoder = ZlibDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+        
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
     fn test_adler32_known_values() {
-        // Test against known Adler-32 values
+        // Test against known Adler-32 values (kept for compatibility)
         assert_eq!(calculate_adler32(b""), 1);
         assert_eq!(calculate_adler32(b"a"), 0x00620062);
         assert_eq!(calculate_adler32(b"abc"), 0x024d0127);
@@ -71,19 +108,14 @@ mod tests {
     }
     
     #[test]
-    fn test_zlib_header() {
-        let compressed = compress_zlib(b"test");
-        // Should start with zlib header
-        assert_eq!(&compressed[0..2], &[0x78, 0x9C]);
-        // Should end with 4-byte Adler-32 checksum
-        assert!(compressed.len() >= 6); // header + data + checksum
-    }
-    
-    #[test]
-    fn test_empty_compression() {
-        let compressed = compress_zlib(&[]);
-        // Even empty data should have header + final block + checksum
-        assert!(compressed.len() >= 6);
-        assert_eq!(&compressed[0..2], &[0x78, 0x9C]);
+    fn test_compression_performance() {
+        // Test that flate2 actually compresses better than our old "stored" format
+        let repetitive_data = b"ABCD".repeat(1000); // 4000 bytes of repetitive data
+        let compressed = compress_zlib(&repetitive_data);
+        
+        // With actual compression, this should be much smaller
+        assert!(compressed.len() < repetitive_data.len() / 10, 
+               "Compressed size {} should be much less than original size {}", 
+               compressed.len(), repetitive_data.len());
     }
 }
