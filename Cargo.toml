@@ -10,6 +10,10 @@ crate-type = ["cdylib"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wit-bindgen-rt = { version = "0.43.0", features = ["bitflags"] }
+# Add SHA1 library - pure Rust, no_std compatible, widely used
+sha1 = "0.10"
+# Add hex encoding/decoding utility (very lightweight)
+hex = "0.4"
 
 [package.metadata.component]
 package = "component:git-server"
