@@ -47,7 +47,7 @@ fn generate_upload_pack_advertisement(repo_state: &GitRepoState) -> HttpResponse
     response_data.extend(encode_flush_pkt());
     
     // 2. Ref advertisement with capabilities
-    let capabilities = "multi_ack thin-pack side-band side-band-64k ofs-delta shallow agent=git-server/0.1.0";
+    let capabilities = "multi_ack_detailed thin-pack side-band side-band-64k ofs-delta shallow agent=git-server/0.1.0";
     
     let mut first_ref = true;
     
@@ -280,7 +280,9 @@ fn handle_upload_pack_negotiation(
     for have in &request.haves {
         if repo_state.objects.contains_key(have) {
             // Found a common object
-            let ack_line = if request.capabilities.contains(&"multi_ack".to_string()) {
+            let ack_line = if request.capabilities.contains(&"multi_ack_detailed".to_string()) {
+                format!("ACK {} continue\n", have)
+            } else if request.capabilities.contains(&"multi_ack".to_string()) {
                 format!("ACK {} continue\n", have)
             } else {
                 format!("ACK {}\n", have)
