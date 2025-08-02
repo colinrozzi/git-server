@@ -334,6 +334,9 @@ fn generate_pack_response(
         response_data.extend(encode_pkt_line(b"NAK\n"));
     }
     
+    // Send flush packet before pack data
+    response_data.extend(encode_flush_pkt());
+    
     // Generate pack file containing requested objects
     match generate_pack_file(repo_state, &request.wants, &request.haves) {
         Ok(pack_data) => {
@@ -341,7 +344,7 @@ fn generate_pack_response(
                 // Send pack data using side-band protocol
                 response_data.extend(encode_sideband_pack_data(&pack_data));
             } else {
-                // Send raw pack data
+                // Send raw pack data directly (no pkt-line framing for pack data)
                 response_data.extend(pack_data);
             }
             
