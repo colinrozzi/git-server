@@ -116,19 +116,29 @@ impl Guest for Component {
             }
         }
 
-        match http_framework::add_route(server_id, "/refs", "GET", git_handler) {
-            Ok(_) => log("Added GET /refs route"),
+        // /refs/* route is now added above with wildcard pattern
+
+        match http_framework::add_route(server_id, "/objects/{*path}", "GET", git_handler) {
+            Ok(_) => log("Added GET /objects/* route"),
             Err(e) => {
-                log(&format!("Failed to add /refs route: {}", e));
-                return Err(format!("Failed to add /refs route: {}", e));
+                log(&format!("Failed to add /objects/* route: {}", e));
+                return Err(format!("Failed to add /objects/* route: {}", e));
             }
         }
-
-        match http_framework::add_route(server_id, "/objects", "GET", git_handler) {
-            Ok(_) => log("Added GET /objects route"),
+        
+        match http_framework::add_route(server_id, "/refs/{*path}", "GET", git_handler) {
+            Ok(_) => log("Added GET /refs/* route"),
             Err(e) => {
-                log(&format!("Failed to add /objects route: {}", e));
-                return Err(format!("Failed to add /objects route: {}", e));
+                log(&format!("Failed to add /refs/* route: {}", e));
+                return Err(format!("Failed to add /refs/* route: {}", e));
+            }
+        }
+        
+        match http_framework::add_route(server_id, "/HEAD", "GET", git_handler) {
+            Ok(_) => log("Added GET /HEAD route"),
+            Err(e) => {
+                log(&format!("Failed to add /HEAD route: {}", e));
+                return Err(format!("Failed to add /HEAD route: {}", e));
             }
         }
 
