@@ -142,6 +142,23 @@ impl Guest for Component {
             }
         }
 
+        // Add PUT routes for dumb HTTP push support
+        match http_framework::add_route(server_id, "/objects/{*path}", "PUT", git_handler) {
+            Ok(_) => log("Added PUT /objects/* route"),
+            Err(e) => {
+                log(&format!("Failed to add PUT /objects/* route: {}", e));
+                return Err(format!("Failed to add PUT /objects/* route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/refs/{*path}", "PUT", git_handler) {
+            Ok(_) => log("Added PUT /refs/* route"),
+            Err(e) => {
+                log(&format!("Failed to add PUT /refs/* route: {}", e));
+                return Err(format!("Failed to add PUT /refs/* route: {}", e));
+            }
+        }
+
         // Start the server
         let actual_port = http_framework::start_server(server_id)
             .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
