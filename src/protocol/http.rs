@@ -340,10 +340,16 @@ fn generate_pack_response(
     // Generate pack file containing requested objects
     match generate_pack_file(repo_state, &request.wants, &request.haves) {
         Ok(pack_data) => {
+            log(&format!("Generated pack file: {} bytes, header: {:?}", 
+                        pack_data.len(), 
+                        if pack_data.len() >= 4 { Some(&pack_data[0..4]) } else { None }));
+            
             if request.capabilities.contains(&"side-band-64k".to_string()) {
+                log("Using side-band-64k protocol for pack data");
                 // Send pack data using side-band protocol
                 response_data.extend(encode_sideband_pack_data(&pack_data));
             } else {
+                log("Sending raw pack data (no side-band)");
                 // Send raw pack data directly (no pkt-line framing for pack data)
                 response_data.extend(pack_data);
             }
