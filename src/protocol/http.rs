@@ -1,13 +1,18 @@
+// Smart HTTP Only Protocol Implementation
+// This completely replaces the dumb HTTP implementation
+
 use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
 use crate::git::objects::GitObject;
 use crate::git::repository::GitRepoState;
 use crate::utils::logging::safe_log as log;
+use std::collections::HashSet;
 
 /// Create an HTTP response with proper headers
 pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResponse {
     let headers = vec![
         ("Content-Type".to_string(), content_type.to_string()),
         ("Content-Length".to_string(), body.len().to_string()),
+        ("Cache-Control".to_string(), "no-cache".to_string()), // Required for Git Smart HTTP
     ];
 
     HttpResponse {
@@ -17,494 +22,765 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
     }
 }
 
-/// Handle GET /info/refs (HTTP)
-/// Returns a simple text file listing all refs
-pub fn handle_info_refs(repo_state: &GitRepoState) -> HttpResponse {
-    log("Serving /info/refs (HTTP)");
+// ============================================================================
+// SMART HTTP REF ADVERTISEMENT (GET /info/refs?service=<service>)
+// ============================================================================
 
-    let mut content = String::new();
-
-    // List all refs in the format: <hash>\t<ref-name>\n
-    for (ref_name, hash) in &repo_state.refs {
-        content.push_str(&format!("{}\t{}\n", hash, ref_name));
+/// Handle GET /info/refs?service=<service> - Smart HTTP ref advertisement
+pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpResponse {
+    log(&format!("Smart HTTP ref advertisement for service: {}", service));
+    
+    match service {
+        "git-upload-pack" => generate_upload_pack_advertisement(repo_state),
+        "git-receive-pack" => generate_receive_pack_advertisement(repo_state),
+        _ => create_response(400, "text/plain", b"Invalid service. Use git-upload-pack or git-receive-pack"),
     }
-
-    // If no refs, return empty (valid for empty repository)
-    if content.is_empty() {
-        log("No refs to serve - empty repository");
-    }
-
-    create_response(200, "text/plain; charset=utf-8", content.as_bytes())
 }
 
-/// Handle GET /HEAD
-/// Returns the contents of the HEAD file
-pub fn handle_head(repo_state: &GitRepoState) -> HttpResponse {
-    log("Serving /HEAD (HTTP)");
-
-    // HEAD file format: "ref: refs/heads/main\n"
-    let head_content = format!("ref: {}\n", repo_state.head);
-
-    create_response(200, "text/plain; charset=utf-8", head_content.as_bytes())
-}
-
-/// Handle GET /objects/xx/xxxxxx...
-/// Serves individual Git objects
-pub fn handle_object(repo_state: &GitRepoState, uri: &str) -> HttpResponse {
-    log(&format!("Serving object: {}", uri));
-
-    // Extract object hash from path like "/objects/ab/cdef123..."
-    let hash = match extract_object_hash_from_path(uri) {
-        Some(h) => h,
-        None => {
-            log(&format!("Invalid object path: {}", uri));
-            return create_response(400, "text/plain", b"Invalid object path");
+/// Generate ref advertisement for git-upload-pack (fetch/clone)
+fn generate_upload_pack_advertisement(repo_state: &GitRepoState) -> HttpResponse {
+    let mut response_data = Vec::new();
+    
+    // 1. Service announcement
+    let service_line = "# service=git-upload-pack\n";
+    response_data.extend(encode_pkt_line(service_line.as_bytes()));
+    response_data.extend(encode_flush_pkt());
+    
+    // 2. Ref advertisement with capabilities
+    let capabilities = "multi_ack thin-pack side-band side-band-64k ofs-delta shallow agent=git-server/0.1.0";
+    
+    let mut first_ref = true;
+    
+    // Add HEAD first if it exists
+    if let Some(head_hash) = repo_state.refs.get(&repo_state.head) {
+        let ref_line = format!("{} HEAD\0{}\n", head_hash, capabilities);
+        response_data.extend(encode_pkt_line(ref_line.as_bytes()));
+        first_ref = false;
+    }
+    
+    // Add all other refs (sorted for consistency)
+    let mut sorted_refs: Vec<_> = repo_state.refs.iter().collect();
+    sorted_refs.sort_by_key(|(name, _)| *name);
+    
+    for (ref_name, hash) in sorted_refs {
+        if ref_name == &repo_state.head {
+            continue; // Already added as HEAD
         }
-    };
-
-    log(&format!("Looking for object: {}", hash));
-
-    if let Some(object) = repo_state.objects.get(&hash) {
-        // Serialize the object in Git's loose object format
-        let object_data = serialize_loose_object(object);
-        create_response(200, "application/x-git-loose-object", &object_data)
-    } else {
-        log(&format!("Object not found: {}", hash));
-        create_response(404, "text/plain", b"Object not found")
+        
+        let ref_line = format!("{} {}\n", hash, ref_name);
+        response_data.extend(encode_pkt_line(ref_line.as_bytes()));
     }
+    
+    // Handle empty repository (no refs)
+    if first_ref {
+        let dummy_line = format!("{} capabilities^{{}}\0{}\n", 
+                                "0000000000000000000000000000000000000000", capabilities);
+        response_data.extend(encode_pkt_line(dummy_line.as_bytes()));
+    }
+    
+    // 3. Final flush packet
+    response_data.extend(encode_flush_pkt());
+    
+    create_response(
+        200,
+        "application/x-git-upload-pack-advertisement",
+        &response_data,
+    )
 }
 
-/// Handle GET /refs/heads/branch or /refs/tags/tag
-/// Serves individual ref files
-pub fn handle_ref(repo_state: &GitRepoState, uri: &str) -> HttpResponse {
-    log(&format!("Serving ref: {}", uri));
-
-    // Convert URI path to ref name (remove leading slash)
-    let ref_name = &uri[1..]; // Remove leading "/"
-
-    if let Some(hash) = repo_state.refs.get(ref_name) {
-        // Ref file contains just the hash + newline
-        let ref_content = format!("{}\n", hash);
-        create_response(200, "text/plain; charset=utf-8", ref_content.as_bytes())
-    } else {
-        log(&format!("Ref not found: {}", ref_name));
-        create_response(404, "text/plain", b"Ref not found")
+/// Generate ref advertisement for git-receive-pack (push)
+fn generate_receive_pack_advertisement(repo_state: &GitRepoState) -> HttpResponse {
+    let mut response_data = Vec::new();
+    
+    // 1. Service announcement
+    let service_line = "# service=git-receive-pack\n";
+    response_data.extend(encode_pkt_line(service_line.as_bytes()));
+    response_data.extend(encode_flush_pkt());
+    
+    // 2. Ref advertisement with push capabilities
+    let capabilities = "report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git-server/0.1.0";
+    
+    let mut first_ref = true;
+    
+    // Add all refs (sorted for consistency)
+    let mut sorted_refs: Vec<_> = repo_state.refs.iter().collect();
+    sorted_refs.sort_by_key(|(name, _)| *name);
+    
+    for (ref_name, hash) in sorted_refs {
+        let ref_line = if first_ref {
+            format!("{} {}\0{}\n", hash, ref_name, capabilities)
+        } else {
+            format!("{} {}\n", hash, ref_name)
+        };
+        
+        response_data.extend(encode_pkt_line(ref_line.as_bytes()));
+        first_ref = false;
     }
+    
+    // Handle empty repository
+    if first_ref {
+        let dummy_line = format!("{} capabilities^{{}}\0{}\n", 
+                                "0000000000000000000000000000000000000000", capabilities);
+        response_data.extend(encode_pkt_line(dummy_line.as_bytes()));
+    }
+    
+    // 3. Final flush packet
+    response_data.extend(encode_flush_pkt());
+    
+    create_response(
+        200,
+        "application/x-git-receive-pack-advertisement",
+        &response_data,
+    )
 }
 
-/// Handle PUT /objects/xx/xxxxxx...
-/// Allows uploading objects for push operations
-pub fn handle_object_upload(
-    repo_state: &mut GitRepoState,
-    uri: &str,
+// ============================================================================
+// SMART HTTP UPLOAD-PACK (POST /git-upload-pack - FETCH/CLONE)
+// ============================================================================
+
+#[derive(Debug)]
+pub struct UploadPackRequest {
+    pub wants: Vec<String>,
+    pub haves: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub shallow: Vec<String>,
+    pub deepen: Option<u32>,
+    pub done: bool,
+}
+
+/// Handle POST /git-upload-pack (smart fetch/clone)
+pub fn handle_upload_pack_request(
+    repo_state: &GitRepoState,
     request: &HttpRequest,
 ) -> HttpResponse {
-    log(&format!("Uploading object: {}", uri));
-
-    let hash = match extract_object_hash_from_path(uri) {
-        Some(h) => h,
-        None => {
-            return create_response(400, "text/plain", b"Invalid object path");
-        }
-    };
-
+    log("Processing smart upload-pack request");
+    
     let body = match &request.body {
         Some(data) => data,
         None => {
-            return create_response(400, "text/plain", b"Missing object data");
+            return create_response(400, "text/plain", b"Missing request body");
         }
     };
+    
+    match parse_upload_pack_request(body) {
+        Ok(upload_request) => process_upload_pack_request(repo_state, upload_request),
+        Err(e) => {
+            log(&format!("Failed to parse upload-pack request: {}", e));
+            create_error_response(&format!("Invalid request: {}", e))
+        }
+    }
+}
 
-    // Parse the uploaded Git loose object
-    match parse_loose_object(body) {
-        Ok(git_object) => {
-            // Verify the hash matches
-            let calculated_hash = crate::utils::hash::calculate_git_hash(&git_object);
-            if calculated_hash != hash {
-                log(&format!(
-                    "Hash mismatch: expected {}, got {}",
-                    hash, calculated_hash
-                ));
-                return create_response(400, "text/plain", b"Hash mismatch");
+/// Parse upload-pack request from pkt-line format
+fn parse_upload_pack_request(data: &[u8]) -> Result<UploadPackRequest, String> {
+    let mut wants = Vec::new();
+    let mut haves = Vec::new();
+    let mut capabilities = Vec::new();
+    let mut shallow = Vec::new();
+    let mut deepen = None;
+    let mut done = false;
+    
+    let mut offset = 0;
+    let mut first_want = true;
+    
+    while offset < data.len() {
+        let (pkt_len, pkt_data) = match decode_pkt_line(data, offset)? {
+            (len, Some(data)) => (len, data),
+            (len, None) => {
+                // Flush packet - continue parsing
+                offset += len;
+                continue;
             }
+        };
+        
+        offset += pkt_len;
+        let line = String::from_utf8_lossy(&pkt_data).trim().to_string();
+        
+        if line.starts_with("want ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                wants.push(parts[1].to_string());
+                
+                // First want line may contain capabilities after \0
+                if first_want {
+                    if let Some(null_pos) = line.find('\0') {
+                        let caps_str = &line[null_pos + 1..];
+                        capabilities.extend(
+                            caps_str.split_whitespace().map(|s| s.to_string())
+                        );
+                    }
+                    first_want = false;
+                }
+            }
+        } else if line.starts_with("have ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                haves.push(parts[1].to_string());
+            }
+        } else if line.starts_with("shallow ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                shallow.push(parts[1].to_string());
+            }
+        } else if line.starts_with("deepen ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                deepen = parts[1].parse().ok();
+            }
+        } else if line == "done" {
+            done = true;
+            break;
+        }
+    }
+    
+    Ok(UploadPackRequest {
+        wants,
+        haves,
+        capabilities,
+        shallow,
+        deepen,
+        done,
+    })
+}
 
-            // Store the object
-            repo_state.add_object(hash.clone(), git_object);
-            log(&format!("Successfully stored object {}", hash));
+/// Process upload-pack request and generate response
+fn process_upload_pack_request(
+    repo_state: &GitRepoState,
+    request: UploadPackRequest,
+) -> HttpResponse {
+    log(&format!("Upload-pack: wants={}, haves={}, done={}", 
+                request.wants.len(), request.haves.len(), request.done));
+    
+    // Validate that all wanted objects exist
+    for want in &request.wants {
+        if !repo_state.objects.contains_key(want) {
+            log(&format!("Wanted object {} not found", want));
+            return create_error_response(&format!("Object {} not found", want));
+        }
+    }
+    
+    if !request.done {
+        // Client is still negotiating - send ACK/NAK response
+        return handle_upload_pack_negotiation(repo_state, &request);
+    }
+    
+    // Client sent "done" - generate pack file
+    generate_pack_response(repo_state, &request)
+}
 
-            create_response(200, "text/plain", b"Object uploaded")
+/// Handle want/have negotiation phase
+fn handle_upload_pack_negotiation(
+    repo_state: &GitRepoState,
+    request: &UploadPackRequest,
+) -> HttpResponse {
+    let mut response_data = Vec::new();
+    let mut found_common = false;
+    
+    // Check if any of the client's "have" objects are in our repository
+    for have in &request.haves {
+        if repo_state.objects.contains_key(have) {
+            // Found a common object
+            let ack_line = if request.capabilities.contains(&"multi_ack".to_string()) {
+                format!("ACK {} continue\n", have)
+            } else {
+                format!("ACK {}\n", have)
+            };
+            response_data.extend(encode_pkt_line(ack_line.as_bytes()));
+            found_common = true;
+            break; // For simplicity, acknowledge first common object
+        }
+    }
+    
+    if !found_common {
+        response_data.extend(encode_pkt_line(b"NAK\n"));
+    }
+    
+    response_data.extend(encode_flush_pkt());
+    
+    create_response(
+        200,
+        "application/x-git-upload-pack-result",
+        &response_data,
+    )
+}
+
+/// Generate pack file response
+fn generate_pack_response(
+    repo_state: &GitRepoState,
+    request: &UploadPackRequest,
+) -> HttpResponse {
+    log("Generating pack file for upload-pack");
+    
+    let mut response_data = Vec::new();
+    
+    // Send final ACK or NAK
+    if !request.haves.is_empty() {
+        let mut found_common = false;
+        for have in &request.haves {
+            if repo_state.objects.contains_key(have) {
+                response_data.extend(encode_pkt_line(
+                    format!("ACK {}\n", have).as_bytes()
+                ));
+                found_common = true;
+                break;
+            }
+        }
+        if !found_common {
+            response_data.extend(encode_pkt_line(b"NAK\n"));
+        }
+    } else {
+        response_data.extend(encode_pkt_line(b"NAK\n"));
+    }
+    
+    // Generate pack file containing requested objects
+    match generate_pack_file(repo_state, &request.wants, &request.haves) {
+        Ok(pack_data) => {
+            if request.capabilities.contains(&"side-band-64k".to_string()) {
+                // Send pack data using side-band protocol
+                response_data.extend(encode_sideband_pack_data(&pack_data));
+            } else {
+                // Send raw pack data
+                response_data.extend(pack_data);
+            }
+            
+            create_response(
+                200,
+                "application/x-git-upload-pack-result",
+                &response_data,
+            )
         }
         Err(e) => {
-            log(&format!("Failed to parse object {}: {}", hash, e));
-            create_response(
-                400,
-                "text/plain",
-                format!("Failed to parse object: {}", e).as_bytes(),
-            )
+            log(&format!("Failed to generate pack: {}", e));
+            create_error_response(&format!("Pack generation failed: {}", e))
         }
     }
 }
 
-/// Handle PUT /refs/heads/branch
-/// Updates a ref to point to a new commit
-pub fn handle_ref_update(
+// ============================================================================
+// SMART HTTP RECEIVE-PACK (POST /git-receive-pack - PUSH)
+// ============================================================================
+
+#[derive(Debug)]
+pub struct ReceivePackRequest {
+    pub commands: Vec<RefUpdateCommand>,
+    pub capabilities: Vec<String>,
+    pub pack_data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RefUpdateCommand {
+    pub old_hash: String,    // Current ref value (all zeros for create)
+    pub new_hash: String,    // New ref value (all zeros for delete)
+    pub ref_name: String,    // Reference name (e.g., refs/heads/main)
+}
+
+/// Handle POST /git-receive-pack (smart push)
+pub fn handle_receive_pack_request(
     repo_state: &mut GitRepoState,
-    uri: &str,
     request: &HttpRequest,
 ) -> HttpResponse {
-    log(&format!("Updating ref: {}", uri));
-
-    let ref_name = &uri[1..]; // Remove leading "/"
-
+    log("Processing smart receive-pack request");
+    
     let body = match &request.body {
         Some(data) => data,
         None => {
-            return create_response(400, "text/plain", b"Missing ref data");
+            return create_response(400, "text/plain", b"Missing request body");
         }
     };
-
-    let new_hash = String::from_utf8_lossy(body).trim().to_string();
-
-    // Validate hash format (40 hex characters)
-    if new_hash.len() != 40 || !new_hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        log(&format!("Invalid hash format: {}", new_hash));
-        return create_response(400, "text/plain", b"Invalid hash format");
-    }
-
-    // Verify the object exists
-    if !repo_state.objects.contains_key(&new_hash) {
-        log(&format!("Object {} not found", new_hash));
-        return create_response(400, "text/plain", b"Object not found");
-    }
-
-    // Check if this is a force update or fast-forward
-    let old_hash = repo_state.refs.get(ref_name);
-    if let Some(old_hash) = old_hash {
-        log(&format!(
-            "Updating ref {} from {} to {}",
-            ref_name, old_hash, new_hash
-        ));
-        // TODO: Add fast-forward check for safety
-    } else {
-        log(&format!(
-            "Creating new ref {} pointing to {}",
-            ref_name, new_hash
-        ));
-    }
-
-    // Update the reference
-    repo_state
-        .refs
-        .insert(ref_name.to_string(), new_hash.clone());
-
-    // Update HEAD if this is the main branch
-    if ref_name == "refs/heads/main" && repo_state.head == "refs/heads/main" {
-        log("Updated main branch, HEAD remains the same");
-    }
-
-    create_response(200, "text/plain", b"Ref updated")
-}
-
-/// Handle LOCK /refs/heads/branch
-/// Creates a lock for git-http-push protocol
-pub fn handle_ref_lock(
-    repo_state: &mut GitRepoState,
-    uri: &str,
-    request: &HttpRequest,
-) -> HttpResponse {
-    log(&format!("Locking ref: {}", uri));
-
-    let ref_name = &uri[1..]; // Remove leading "/"
-
-    // For git-http-push, we need to return the current ref value or create a lock
-    // The lock is conceptual since we're single-threaded
-
-    if let Some(current_hash) = repo_state.refs.get(ref_name) {
-        // Return current ref value
-        let lock_content = format!("{}\n", current_hash);
-        create_response(200, "text/plain; charset=utf-8", lock_content.as_bytes())
-    } else {
-        // Ref doesn't exist yet, allow creation
-        create_response(
-            200,
-            "text/plain; charset=utf-8",
-            b"0000000000000000000000000000000000000000\n",
-        )
+    
+    match parse_receive_pack_request(body) {
+        Ok(receive_request) => process_receive_pack_request(repo_state, receive_request),
+        Err(e) => {
+            log(&format!("Failed to parse receive-pack request: {}", e));
+            create_response(400, "text/plain", format!("Invalid request: {}", e).as_bytes())
+        }
     }
 }
 
-/// Handle DELETE /refs/heads/branch  
-/// Releases a lock for git-http-push protocol
-pub fn handle_ref_unlock(
-    _repo_state: &mut GitRepoState,
-    uri: &str,
-    _request: &HttpRequest,
-) -> HttpResponse {
-    log(&format!("Unlocking ref: {}", uri));
-
-    // Since we don't actually maintain locks (single-threaded), just acknowledge
-    create_response(200, "text/plain", b"Ref unlocked")
-}
-
-/// Extract object hash from path like "/objects/ab/cdef123..."
-fn extract_object_hash_from_path(path: &str) -> Option<String> {
-    // Path format: /objects/ab/cdef123456789...
-    if !path.starts_with("/objects/") {
-        return None;
+/// Parse receive-pack request from pkt-line format
+fn parse_receive_pack_request(data: &[u8]) -> Result<ReceivePackRequest, String> {
+    let mut commands = Vec::new();
+    let mut capabilities = Vec::new();
+    let mut offset = 0;
+    let mut first_command = true;
+    
+    // Parse command list first
+    while offset < data.len() {
+        let (pkt_len, pkt_data) = match decode_pkt_line(data, offset)? {
+            (len, Some(data)) => (len, data),
+            (len, None) => {
+                // Flush packet - end of commands, start of pack data
+                offset += len;
+                break;
+            }
+        };
+        
+        offset += pkt_len;
+        let line = String::from_utf8_lossy(&pkt_data).trim().to_string();
+        
+        // Parse command: "<old-hash> <new-hash> <ref-name>[\0<capabilities>]"
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let old_hash = parts[0].to_string();
+            let new_hash = parts[1].to_string();
+            let ref_name = parts[2].to_string();
+            
+            // Extract capabilities from first command if present
+            if first_command {
+                if let Some(null_pos) = line.find('\0') {
+                    let caps_str = &line[null_pos + 1..];
+                    capabilities.extend(
+                        caps_str.split_whitespace().map(|s| s.to_string())
+                    );
+                }
+                first_command = false;
+            }
+            
+            commands.push(RefUpdateCommand {
+                old_hash,
+                new_hash,
+                ref_name,
+            });
+        }
     }
-
-    let remaining = &path[9..]; // Remove "/objects/"
-    let parts: Vec<&str> = remaining.split('/').collect();
-
-    if parts.len() == 2 && parts[0].len() == 2 && parts[1].len() == 38 {
-        // Reconstruct full hash: first 2 chars + remaining 38 chars
-        Some(format!("{}{}", parts[0], parts[1]))
+    
+    // Extract pack data if present
+    let pack_data = if offset < data.len() {
+        Some(data[offset..].to_vec())
     } else {
         None
-    }
-}
-
-/// Serialize a GitObject as a loose object (zlib compressed with header)
-fn serialize_loose_object(object: &GitObject) -> Vec<u8> {
-    use crate::utils::compression::compress_zlib;
-
-    let (obj_type, content) = match object {
-        GitObject::Blob { content } => ("blob", content.clone()),
-        GitObject::Tree { entries } => {
-            use crate::git::repository::serialize_tree_object;
-            ("tree", serialize_tree_object(entries))
-        }
-        GitObject::Commit {
-            tree,
-            parents,
-            author,
-            committer,
-            message,
-        } => {
-            use crate::git::repository::serialize_commit_object;
-            (
-                "commit",
-                serialize_commit_object(tree, parents, author, committer, message),
-            )
-        }
-        GitObject::Tag { .. } => {
-            // TODO: Implement tag serialization
-            ("tag", vec![])
-        }
     };
-
-    // Git loose object format: "<type> <size>\0<content>"
-    let header = format!("{} {}\0", obj_type, content.len());
-    let mut full_data = header.into_bytes();
-    full_data.extend(content);
-
-    // Compress with zlib
-    compress_zlib(&full_data)
-}
-
-/// Parse a Git loose object from compressed data
-fn parse_loose_object(compressed_data: &[u8]) -> Result<GitObject, String> {
-    // Decompress the object
-    let decompressed = crate::utils::compression::decompress_zlib(compressed_data)
-        .map_err(|e| format!("Decompression failed: {}", e))?;
-
-    // Find the null byte that separates header from content
-    let null_pos = decompressed
-        .iter()
-        .position(|&b| b == 0)
-        .ok_or("No null separator found in object")?;
-
-    // Parse header: "<type> <size>"
-    let header = String::from_utf8_lossy(&decompressed[..null_pos]);
-    let content = &decompressed[null_pos + 1..];
-
-    let header_parts: Vec<&str> = header.split(' ').collect();
-    if header_parts.len() != 2 {
-        return Err(format!("Invalid object header: {}", header));
-    }
-
-    let obj_type = header_parts[0];
-    let size: usize = header_parts[1]
-        .parse()
-        .map_err(|_| format!("Invalid size in header: {}", header_parts[1]))?;
-
-    if content.len() != size {
-        return Err(format!(
-            "Size mismatch: header says {}, got {}",
-            size,
-            content.len()
-        ));
-    }
-
-    // Parse the object based on type
-    match obj_type {
-        "blob" => Ok(GitObject::Blob {
-            content: content.to_vec(),
-        }),
-        "tree" => parse_tree_object(content),
-        "commit" => parse_commit_object(content),
-        "tag" => parse_tag_object(content),
-        _ => Err(format!("Unknown object type: {}", obj_type)),
-    }
-}
-
-/// Parse a Git tree object
-fn parse_tree_object(content: &[u8]) -> Result<GitObject, String> {
-    let mut entries = Vec::new();
-    let mut pos = 0;
-
-    while pos < content.len() {
-        // Find the space after mode
-        let space_pos = content[pos..]
-            .iter()
-            .position(|&b| b == b' ')
-            .ok_or("No space found after mode")?;
-        let mode = String::from_utf8_lossy(&content[pos..pos + space_pos]).to_string();
-        pos += space_pos + 1;
-
-        // Find the null byte after filename
-        let null_pos = content[pos..]
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or("No null byte found after filename")?;
-        let name = String::from_utf8_lossy(&content[pos..pos + null_pos]).to_string();
-        pos += null_pos + 1;
-
-        // Read the 20-byte SHA-1 hash
-        if pos + 20 > content.len() {
-            return Err("Truncated hash in tree entry".to_string());
-        }
-        let hash = hex::encode(&content[pos..pos + 20]);
-        pos += 20;
-
-        entries.push(crate::git::objects::TreeEntry::new(mode, name, hash));
-    }
-
-    Ok(GitObject::Tree { entries })
-}
-
-/// Parse a Git commit object
-fn parse_commit_object(content: &[u8]) -> Result<GitObject, String> {
-    let content_str = String::from_utf8_lossy(content);
-    let lines: Vec<&str> = content_str.lines().collect();
-
-    let mut tree = String::new();
-    let mut parents = Vec::new();
-    let mut author = String::new();
-    let mut committer = String::new();
-    let mut message_start = 0;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.starts_with("tree ") {
-            tree = line[5..].to_string();
-        } else if line.starts_with("parent ") {
-            parents.push(line[7..].to_string());
-        } else if line.starts_with("author ") {
-            author = line[7..].to_string();
-        } else if line.starts_with("committer ") {
-            committer = line[10..].to_string();
-        } else if line.is_empty() {
-            message_start = i + 1;
-            break;
-        }
-    }
-
-    let message = lines[message_start..].join("\n");
-
-    if tree.is_empty() {
-        return Err("No tree found in commit".to_string());
-    }
-
-    Ok(GitObject::Commit {
-        tree,
-        parents,
-        author,
-        committer,
-        message,
+    
+    Ok(ReceivePackRequest {
+        commands,
+        capabilities,
+        pack_data,
     })
 }
 
-/// Parse a Git tag object
-fn parse_tag_object(content: &[u8]) -> Result<GitObject, String> {
-    let content_str = String::from_utf8_lossy(content);
-    let lines: Vec<&str> = content_str.lines().collect();
-
-    let mut object = String::new();
-    let mut tag_type = String::new();
-    let mut tagger = String::new();
-    let mut message_start = 0;
-
-    for (i, line) in lines.iter().enumerate() {
-        if line.starts_with("object ") {
-            object = line[7..].to_string();
-        } else if line.starts_with("type ") {
-            tag_type = line[5..].to_string();
-        } else if line.starts_with("tagger ") {
-            tagger = line[7..].to_string();
-        } else if line.is_empty() {
-            message_start = i + 1;
-            break;
+/// Process receive-pack request and generate response
+fn process_receive_pack_request(
+    repo_state: &mut GitRepoState,
+    request: ReceivePackRequest,
+) -> HttpResponse {
+    log(&format!("Receive-pack: {} commands", request.commands.len()));
+    
+    // Process pack data first if present
+    if let Some(pack_data) = &request.pack_data {
+        if let Err(e) = process_pack_data(repo_state, pack_data) {
+            log(&format!("Failed to process pack data: {}", e));
+            return generate_push_response(&request, false, &format!("unpack {}", e), &[]);
         }
     }
-
-    let message = lines[message_start..].join("\n");
-
-    Ok(GitObject::Tag {
-        object,
-        tag_type,
-        tagger,
-        message,
-    })
+    
+    // Process each ref update command
+    let mut command_results = Vec::new();
+    let mut all_success = true;
+    
+    for command in &request.commands {
+        let result = process_ref_update_command(repo_state, command);
+        let success = result.starts_with("ok");
+        if !success {
+            all_success = false;
+        }
+        command_results.push(result);
+    }
+    
+    // Generate response
+    let unpack_status = if request.pack_data.is_some() {
+        "unpack ok"
+    } else {
+        "unpack ok" // No pack data to process
+    };
+    
+    generate_push_response(&request, all_success, unpack_status, &command_results)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ============================================================================
+// PACKET-LINE PROTOCOL UTILITIES
+// ============================================================================
 
-    #[test]
-    fn test_extract_object_hash() {
-        assert_eq!(
-            extract_object_hash_from_path("/objects/ab/cdef1234567890123456789012345678901234"),
-            Some("abcdef1234567890123456789012345678901234".to_string())
-        );
-
-        assert_eq!(extract_object_hash_from_path("/invalid/path"), None);
-        assert_eq!(extract_object_hash_from_path("/objects/ab/short"), None);
+/// Encode data as a pkt-line (4-byte hex length + data)
+pub fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
+    let total_len = data.len() + 4; // +4 for the length prefix
+    if total_len > 0xFFFF {
+        panic!("pkt-line too long: {}", total_len);
     }
+    
+    let mut result = Vec::new();
+    result.extend(format!("{:04x}", total_len).as_bytes());
+    result.extend(data);
+    result
+}
 
-    #[test]
-    fn test_parse_blob_object() {
-        // Create a simple blob object: "blob 13\0Hello, world!"
-        let mut data = b"blob 13\0".to_vec();
-        data.extend(b"Hello, world!");
+/// Encode a flush packet (0000)
+pub fn encode_flush_pkt() -> Vec<u8> {
+    b"0000".to_vec()
+}
 
-        let compressed = crate::utils::compression::compress_zlib(&data);
-        let result = parse_loose_object(&compressed).unwrap();
+/// Decode pkt-line format, returns (length, data) or None for flush
+pub fn decode_pkt_line(data: &[u8], offset: usize) -> Result<(usize, Option<Vec<u8>>), String> {
+    if offset + 4 > data.len() {
+        return Err("Not enough data for pkt-line length".to_string());
+    }
+    
+    let length_str = std::str::from_utf8(&data[offset..offset + 4])
+        .map_err(|_| "Invalid hex in pkt-line length")?;
+        
+    let length = usize::from_str_radix(length_str, 16)
+        .map_err(|_| format!("Invalid hex length: {}", length_str))?;
+    
+    if length == 0 {
+        // Flush packet
+        return Ok((4, None));
+    }
+    
+    if length < 4 {
+        return Err(format!("Invalid pkt-line length: {}", length));
+    }
+    
+    let data_len = length - 4;
+    if offset + length > data.len() {
+        return Err("Not enough data for pkt-line payload".to_string());
+    }
+    
+    let payload = data[offset + 4..offset + length].to_vec();
+    Ok((length, Some(payload)))
+}
 
-        match result {
-            GitObject::Blob { content } => {
-                assert_eq!(content, b"Hello, world!");
-            }
-            _ => panic!("Expected blob object"),
+/// Extract service name from query parameters  
+pub fn extract_service_from_query(query_params: &str) -> Option<&str> {
+    for param in query_params.split('&') {
+        if let Some(value) = param.strip_prefix("service=") {
+            return Some(value);
         }
     }
+    None
+}
 
-    #[test]
-    fn test_parse_commit_object() {
-        let commit_content = b"tree abc123def456\nauthor Test User <test@example.com> 1234567890 +0000\ncommitter Test User <test@example.com> 1234567890 +0000\n\nInitial commit\n";
+/// Create an error response with ERR packet
+fn create_error_response(message: &str) -> HttpResponse {
+    let mut response_data = Vec::new();
+    let err_line = format!("ERR {}\n", message);
+    response_data.extend(encode_pkt_line(err_line.as_bytes()));
+    
+    create_response(
+        200, // Git protocol errors are still HTTP 200
+        "application/x-git-upload-pack-result",
+        &response_data,
+    )
+}
 
-        let mut data = format!("commit {}\0", commit_content.len()).into_bytes();
-        data.extend(commit_content);
+// ============================================================================
+// PACK FILE GENERATION (STUB IMPLEMENTATIONS - TO BE COMPLETED)
+// ============================================================================
 
-        let compressed = crate::utils::compression::compress_zlib(&data);
-        let result = parse_loose_object(&compressed).unwrap();
+/// Generate a Git pack file containing the requested objects
+fn generate_pack_file(
+    repo_state: &GitRepoState,
+    wants: &[String],
+    haves: &[String],
+) -> Result<Vec<u8>, String> {
+    // Collect all objects needed (wanted objects + their dependencies)
+    let mut needed_objects = HashSet::new();
+    let have_set: HashSet<_> = haves.iter().collect();
+    
+    // Add all wanted objects and their dependencies
+    for want in wants {
+        collect_object_dependencies(repo_state, want, &mut needed_objects, &have_set)?;
+    }
+    
+    log(&format!("Pack file will contain {} objects", needed_objects.len()));
+    
+    // Generate the pack file
+    create_pack_file(repo_state, &needed_objects)
+}
 
-        match result {
-            GitObject::Commit { tree, message, .. } => {
-                assert_eq!(tree, "abc123def456");
-                assert_eq!(message, "Initial commit");
+/// Recursively collect all object dependencies
+fn collect_object_dependencies(
+    repo_state: &GitRepoState,
+    object_hash: &str,
+    needed: &mut HashSet<String>,
+    haves: &HashSet<&String>,
+) -> Result<(), String> {
+    // Skip if client already has this object
+    if haves.contains(&object_hash.to_string()) {
+        return Ok(());
+    }
+    
+    // Skip if already processed
+    if needed.contains(object_hash) {
+        return Ok(());
+    }
+    
+    // Add this object
+    needed.insert(object_hash.to_string());
+    
+    // Get the object and add its dependencies
+    if let Some(object) = repo_state.objects.get(object_hash) {
+        match object {
+            GitObject::Commit { tree, parents, .. } => {
+                // Add tree and parent commits
+                collect_object_dependencies(repo_state, tree, needed, haves)?;
+                for parent in parents {
+                    collect_object_dependencies(repo_state, parent, needed, haves)?;
+                }
             }
-            _ => panic!("Expected commit object"),
+            GitObject::Tree { entries } => {
+                // Add all tree entries
+                for entry in entries {
+                    collect_object_dependencies(repo_state, &entry.hash, needed, haves)?;
+                }
+            }
+            GitObject::Tag { object, .. } => {
+                // Add tagged object
+                collect_object_dependencies(repo_state, object, needed, haves)?;
+            }
+            GitObject::Blob { .. } => {
+                // Blobs have no dependencies
+            }
         }
     }
+    
+    Ok(())
+}
+
+/// Create a Git pack file from a set of objects
+fn create_pack_file(
+    repo_state: &GitRepoState,
+    objects: &HashSet<String>,
+) -> Result<Vec<u8>, String> {
+    let mut pack_data = Vec::new();
+    
+    // Pack file header: "PACK" + version + object count
+    pack_data.extend(b"PACK");
+    pack_data.extend((2u32).to_be_bytes());  // Version 2
+    pack_data.extend((objects.len() as u32).to_be_bytes());  // Object count
+    
+    // Add each object to the pack
+    for object_hash in objects {
+        if let Some(object) = repo_state.objects.get(object_hash) {
+            let object_data = serialize_pack_object(object)?;
+            pack_data.extend(object_data);
+        }
+    }
+    
+    // Add SHA-1 checksum of the entire pack (excluding this checksum)
+    let checksum = crate::utils::hash::sha1_hash(&pack_data);
+    pack_data.extend(checksum);
+    
+    Ok(pack_data)
+}
+
+/// Serialize an object for inclusion in a pack file
+fn serialize_pack_object(object: &GitObject) -> Result<Vec<u8>, String> {
+    super::pack::serialize_pack_object(object)
+}
+
+/// Process pack data and add objects to repository
+fn process_pack_data(repo_state: &mut GitRepoState, pack_data: &[u8]) -> Result<(), String> {
+    super::pack::process_pack_data(repo_state, pack_data)
+}
+
+/// Process a single ref update command
+fn process_ref_update_command(
+    repo_state: &mut GitRepoState,
+    command: &RefUpdateCommand,
+) -> String {
+    log(&format!(
+        "Processing ref update: {} {} -> {}",
+        command.ref_name, command.old_hash, command.new_hash
+    ));
+    
+    let zero_hash = "0000000000000000000000000000000000000000";
+    
+    if command.new_hash == zero_hash {
+        // Delete reference
+        if let Some(current_hash) = repo_state.refs.remove(&command.ref_name) {
+            if current_hash != command.old_hash {
+                return format!("ng {} non-fast-forward", command.ref_name);
+            }
+            format!("ok {}", command.ref_name)
+        } else {
+            format!("ng {} does not exist", command.ref_name)
+        }
+    } else if command.old_hash == zero_hash {
+        // Create new reference
+        if repo_state.refs.contains_key(&command.ref_name) {
+            format!("ng {} already exists", command.ref_name)
+        } else {
+            repo_state.refs.insert(command.ref_name.clone(), command.new_hash.clone());
+            format!("ok {}", command.ref_name)
+        }
+    } else {
+        // Update existing reference
+        match repo_state.refs.get(&command.ref_name) {
+            Some(current_hash) => {
+                if current_hash != &command.old_hash {
+                    format!("ng {} non-fast-forward", command.ref_name)
+                } else {
+                    repo_state.refs.insert(command.ref_name.clone(), command.new_hash.clone());
+                    format!("ok {}", command.ref_name)
+                }
+            }
+            None => {
+                format!("ng {} does not exist", command.ref_name)
+            }
+        }
+    }
+}
+
+/// Generate push response with status report
+fn generate_push_response(
+    request: &ReceivePackRequest,
+    _success: bool,
+    unpack_status: &str,
+    command_results: &[String],
+) -> HttpResponse {
+    let mut response_data = Vec::new();
+    
+    // Send unpack status
+    let unpack_line = format!("{}\n", unpack_status);
+    response_data.extend(encode_pkt_line(unpack_line.as_bytes()));
+    
+    // Send command results if report-status was requested
+    if request.capabilities.contains(&"report-status".to_string()) {
+        for result in command_results {
+            let result_line = format!("{}\n", result);
+            response_data.extend(encode_pkt_line(result_line.as_bytes()));
+        }
+    }
+    
+    // End with flush packet
+    response_data.extend(encode_flush_pkt());
+    
+    create_response(
+        200,
+        "application/x-git-receive-pack-result",
+        &response_data,
+    )
+}
+
+/// Encode pack data using side-band protocol
+fn encode_sideband_pack_data(pack_data: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let chunk_size = 65515; // Max data per side-band packet
+    
+    let mut offset = 0;
+    while offset < pack_data.len() {
+        let chunk_end = std::cmp::min(offset + chunk_size, pack_data.len());
+        let chunk = &pack_data[offset..chunk_end];
+        
+        // Create side-band packet: channel 1 (data) + chunk
+        let mut packet_data = Vec::new();
+        packet_data.push(1u8); // Channel 1 = pack data
+        packet_data.extend(chunk);
+        
+        result.extend(encode_pkt_line(&packet_data));
+        offset = chunk_end;
+    }
+    
+    // End with flush packet
+    result.extend(encode_flush_pkt());
+    result
 }

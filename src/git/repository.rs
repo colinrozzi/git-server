@@ -38,19 +38,9 @@ impl GitRepoState {
         repo
     }
 
-    /// Add an object to the repository
-    pub fn add_object(&mut self, hash: String, object: GitObject) {
-        self.objects.insert(hash, object);
-    }
-
     /// Get an object from the repository
     pub fn get_object(&self, hash: &str) -> Option<&GitObject> {
         self.objects.get(hash)
-    }
-
-    /// Update a reference to point to a new commit
-    pub fn update_ref(&mut self, ref_name: String, commit_hash: String) {
-        self.refs.insert(ref_name, commit_hash);
     }
 
     /// Get the commit hash for a reference
@@ -389,6 +379,88 @@ impl GitRepoState {
         self.validate();
         
         log(&format!("Repository initialization complete with {} objects", self.objects.len()));
+    }
+
+    /// Add an object to the repository (Smart HTTP)
+    pub fn add_object(&mut self, hash: String, object: GitObject) {
+        log(&format!("Adding object to repository: {} ({})", 
+                    hash, 
+                    match object {
+                        GitObject::Blob { .. } => "blob",
+                        GitObject::Tree { .. } => "tree", 
+                        GitObject::Commit { .. } => "commit",
+                        GitObject::Tag { .. } => "tag",
+                    }
+        ));
+        self.objects.insert(hash, object);
+    }
+
+    /// Update or create a reference
+    pub fn update_ref(&mut self, ref_name: String, new_hash: String) {
+        log(&format!("Updating ref {} to {}", ref_name, new_hash));
+        self.refs.insert(ref_name, new_hash);
+    }
+
+    /// Delete a reference
+    pub fn delete_ref(&mut self, ref_name: &str) -> Option<String> {
+        log(&format!("Deleting ref {}", ref_name));
+        self.refs.remove(ref_name)
+    }
+
+    /// Check if an object exists in the repository
+    pub fn has_object(&self, hash: &str) -> bool {
+        self.objects.contains_key(hash)
+    }
+
+    /// Get current value of a reference
+    pub fn get_ref_value(&self, ref_name: &str) -> Option<&String> {
+        self.refs.get(ref_name)
+    }
+
+    /// Ensure we have minimal objects for Smart HTTP testing
+    pub fn ensure_minimal_objects_for_smart_http(&mut self) {
+        if self.objects.is_empty() {
+            log("Creating minimal objects for Smart HTTP testing");
+            
+            // Create a simple blob
+            let blob = GitObject::Blob {
+                content: b"Hello, Smart HTTP Git Server!\n".to_vec(),
+            };
+            let blob_hash = crate::utils::hash::calculate_git_hash(&blob);
+            self.add_object(blob_hash.clone(), blob);
+
+            // Create a simple tree containing the blob
+            let tree_entry = crate::git::objects::TreeEntry::new(
+                "100644".to_string(),
+                "README.md".to_string(),
+                blob_hash.clone(),
+            );
+            let tree = GitObject::Tree {
+                entries: vec![tree_entry],
+            };
+            let tree_hash = crate::utils::hash::calculate_git_hash(&tree);
+            self.add_object(tree_hash.clone(), tree);
+
+            // Create an initial commit
+            let commit = GitObject::Commit {
+                tree: tree_hash,
+                parents: vec![], // No parents - initial commit
+                author: "Git Server <git@server.com> 1640995200 +0000".to_string(),
+                committer: "Git Server <git@server.com> 1640995200 +0000".to_string(),
+                message: "Initial commit\n\nCreated by Smart HTTP Git Server".to_string(),
+            };
+            let commit_hash = crate::utils::hash::calculate_git_hash(&commit);
+            self.add_object(commit_hash.clone(), commit);
+
+            // Create main branch pointing to the commit
+            self.update_ref("refs/heads/main".to_string(), commit_hash);
+            self.head = "refs/heads/main".to_string();
+
+            log(&format!(
+                "Created {} objects and 1 ref for testing",
+                self.objects.len()
+            ));
+        }
     }
 }
 

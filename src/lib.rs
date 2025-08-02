@@ -15,8 +15,8 @@ use bindings::theater::simple::runtime::log;
 use git::objects::GitObject;
 use git::repository::GitRepoState;
 use protocol::http::{
-    create_response, handle_head, handle_info_refs, handle_object, handle_object_upload,
-    handle_ref, handle_ref_lock, handle_ref_unlock, handle_ref_update,
+    create_response, extract_service_from_query, handle_smart_info_refs,
+    handle_upload_pack_request, handle_receive_pack_request,
 };
 
 struct Component;
@@ -42,8 +42,8 @@ impl Guest for Component {
         // Start with empty repository - objects will come from git push
         log("Starting with empty repository - ready to receive pushes");
 
-        // Add a simple test object so we can test dumb HTTP
-        repo_state.ensure_minimal_objects_debug();
+        // Add test objects for Smart HTTP
+        repo_state.ensure_minimal_objects_for_smart_http();
 
         log(&format!(
             "Git repository '{}' initialized with {} refs and {} objects",
@@ -197,7 +197,7 @@ impl HttpHandlers for Component {
     ) -> Result<(Option<Vec<u8>>, (HttpResponse,)), String> {
         let (_handler_id, request) = params;
 
-        log(&format!("HTTP {} {}", request.method, request.uri));
+        log(&format!("Smart HTTP {} {}", request.method, request.uri));
 
         // Parse current state
         let mut repo_state: GitRepoState = match state {
@@ -206,29 +206,35 @@ impl HttpHandlers for Component {
             None => GitRepoState::default(),
         };
 
-        // Route the request using Git Dumb HTTP Protocol
-        let response = match (request.method.as_str(), request.uri.as_str()) {
-            // Git Dumb HTTP Protocol endpoints
-            ("GET", "/info/refs") => handle_info_refs(&repo_state),
-            ("GET", uri) if uri.contains("/info/refs") => handle_info_refs(&repo_state), // Catch ?service= queries
-            ("GET", "/HEAD") => handle_head(&repo_state),
-            ("GET", uri) if uri.starts_with("/objects/") => handle_object(&repo_state, uri),
-            ("GET", uri) if uri.starts_with("/refs/") => handle_ref(&repo_state, uri),
+        // Parse URI to separate path from query parameters
+        let (path, query) = if let Some(pos) = request.uri.find('?') {
+            (&request.uri[..pos], &request.uri[pos + 1..])
+        } else {
+            (request.uri.as_str(), "")
+        };
 
-            // Push support (upload objects and update refs)
-            ("PUT", uri) if uri.starts_with("/objects/") => {
-                handle_object_upload(&mut repo_state, uri, &request)
-            }
-            ("PUT", uri) if uri.starts_with("/refs/") => {
-                handle_ref_update(&mut repo_state, uri, &request)
+        // Smart HTTP Only Routes
+        let response = match (request.method.as_str(), path) {
+            // Smart HTTP ref advertisement - REQUIRED
+            ("GET", "/info/refs") => {
+                match extract_service_from_query(query) {
+                    Some(service) => handle_smart_info_refs(&repo_state, service),
+                    None => create_response(
+                        400, 
+                        "text/plain", 
+                        b"Smart HTTP requires ?service=git-upload-pack or ?service=git-receive-pack"
+                    ),
+                }
             }
 
-            // git-http-push support (WebDAV locking mechanism)
-            ("LOCK", uri) if uri.starts_with("/refs/") => {
-                handle_ref_lock(&mut repo_state, uri, &request)
+            // Smart HTTP fetch/clone
+            ("POST", "/git-upload-pack") => {
+                handle_upload_pack_request(&repo_state, &request)
             }
-            ("DELETE", uri) if uri.starts_with("/refs/") => {
-                handle_ref_unlock(&mut repo_state, uri, &request)
+
+            // Smart HTTP push
+            ("POST", "/git-receive-pack") => {
+                handle_receive_pack_request(&mut repo_state, &request)
             }
 
             // Debug/info endpoints for development
@@ -239,10 +245,14 @@ impl HttpHandlers for Component {
             // 404 for everything else
             _ => {
                 log(&format!(
-                    "Unknown route: {} {}",
+                    "Unknown route: {} {} - Smart HTTP only supports /info/refs, /git-upload-pack, /git-receive-pack",
                     request.method, request.uri
                 ));
-                create_response(404, "text/plain", "Not Found".as_bytes())
+                create_response(
+                    404, 
+                    "text/plain", 
+                    b"Not Found. Smart HTTP endpoints: GET /info/refs?service=..., POST /git-upload-pack, POST /git-receive-pack"
+                )
             }
         };
 
