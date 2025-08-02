@@ -160,7 +160,7 @@ impl Guest for Component {
             }
         }
 
-        // Add LOCK and DELETE routes for git-http-push support
+        // Add LOCK and DELETE routes for git-http-push support (now supported!)
         match http_framework::add_route(server_id, "/refs/{*path}", "LOCK", git_handler) {
             Ok(_) => log("Added LOCK /refs/* route"),
             Err(e) => {
@@ -220,7 +220,7 @@ impl HttpHandlers for Component {
             ("PUT", uri) if uri.starts_with("/objects/") => handle_dumb_object_upload(&mut repo_state, uri, &request),
             ("PUT", uri) if uri.starts_with("/refs/") => handle_dumb_ref_update(&mut repo_state, uri, &request),
             
-            // git-http-push support (locking mechanism)
+            // git-http-push support (WebDAV locking mechanism)
             ("LOCK", uri) if uri.starts_with("/refs/") => handle_ref_lock(&mut repo_state, uri, &request),
             ("DELETE", uri) if uri.starts_with("/refs/") => handle_ref_unlock(&mut repo_state, uri, &request),
 
