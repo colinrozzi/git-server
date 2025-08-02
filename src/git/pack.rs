@@ -38,8 +38,18 @@ pub fn generate_pack_file(repo_state: &GitRepoState, object_hashes: &[String]) -
                 GitObject::Blob { content } => (1u8, content.clone()), // OBJ_BLOB = 1
                 GitObject::Tree { entries } => (2u8, serialize_tree_object(entries)), // OBJ_TREE = 2
                 GitObject::Commit { tree, parents, author, committer, message } => {
-                    // CRITICAL FIX: Use the EXACT same author/committer as when hash was calculated
+                    // CRITICAL FIX: Re-serialize using the stored object data to ensure exact hash match
                     let commit_data = serialize_commit_object(tree, parents, author, committer, message);
+                    
+                    // Verify the serialized data matches the expected hash
+                    let recalculated_hash = crate::utils::hash::calculate_git_hash("commit", &commit_data);
+                    if recalculated_hash != *hash {
+                        log(&format!("CRITICAL: Pack hash mismatch for commit {}", hash));
+                        log(&format!("  Expected: {}", hash));
+                        log(&format!("  Got:      {}", recalculated_hash));
+                        log(&format!("  Content:  {:?}", String::from_utf8_lossy(&commit_data)));
+                    }
+                    
                     (3u8, commit_data) // OBJ_COMMIT = 3
                 }
                 GitObject::Tag { .. } => (4u8, vec![]), // OBJ_TAG = 4, not implemented
