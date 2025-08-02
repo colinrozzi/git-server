@@ -14,8 +14,9 @@ use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, Middlewar
 use bindings::theater::simple::runtime::log;
 use git::objects::GitObject;
 use git::repository::GitRepoState;
-use protocol::smart_http::{
-    create_response, extract_query_param, handle_info_refs, handle_receive_pack, handle_upload_pack,
+use protocol::dumb_http::{
+    create_response, handle_dumb_info_refs, handle_dumb_head, handle_dumb_object, 
+    handle_dumb_ref, handle_dumb_object_upload, handle_dumb_ref_update,
 };
 
 struct Component;
@@ -40,6 +41,9 @@ impl Guest for Component {
 
         // Start with empty repository - objects will come from git push
         log("Starting with empty repository - ready to receive pushes");
+        
+        // Add a simple test object so we can test dumb HTTP
+        repo_state.ensure_minimal_objects_debug();
 
         log(&format!(
             "Git repository '{}' initialized with {} refs and {} objects",
@@ -158,21 +162,22 @@ impl HttpHandlers for Component {
             None => GitRepoState::default(),
         };
 
-        // Route the request
+        // Route the request using Git Dumb HTTP Protocol
         let response = match (request.method.as_str(), request.uri.as_str()) {
-            // Git Smart HTTP Protocol endpoints
-            ("GET", uri) if uri.contains("/info/refs") => handle_info_refs(&repo_state, &request),
-            ("POST", uri) if uri.ends_with("/git-upload-pack") => {
-                handle_upload_pack(&mut repo_state, &request)
-            }
-            ("POST", uri) if uri.ends_with("/git-receive-pack") => {
-                handle_receive_pack(&mut repo_state, &request)
-            }
+            // Git Dumb HTTP Protocol endpoints
+            ("GET", "/info/refs") => handle_dumb_info_refs(&repo_state),
+            ("GET", "/HEAD") => handle_dumb_head(&repo_state),
+            ("GET", uri) if uri.starts_with("/objects/") => handle_dumb_object(&repo_state, uri),
+            ("GET", uri) if uri.starts_with("/refs/") => handle_dumb_ref(&repo_state, uri),
+            
+            // Push support (upload objects and update refs)
+            ("PUT", uri) if uri.starts_with("/objects/") => handle_dumb_object_upload(&mut repo_state, uri, &request),
+            ("PUT", uri) if uri.starts_with("/refs/") => handle_dumb_ref_update(&mut repo_state, uri, &request),
 
             // Debug/info endpoints for development
             ("GET", "/") => handle_repo_info(&repo_state),
-            ("GET", "/refs") => handle_list_refs(&repo_state),
-            ("GET", "/objects") => handle_list_objects(&repo_state),
+            ("GET", "/debug/refs") => handle_list_refs(&repo_state),
+            ("GET", "/debug/objects") => handle_list_objects(&repo_state),
 
             // 404 for everything else
             _ => {
