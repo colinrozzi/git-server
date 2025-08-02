@@ -254,8 +254,11 @@ pub fn handle_receive_pack(repo_state: &mut GitRepoState, request: &HttpRequest)
                 log(&format!("Received pack file: {} bytes", pack_data.len()));
             }
             
-            // Generate success response
+            // Generate success response in correct format
             let mut response_body = Vec::new();
+            
+            // Send "unpack ok" first
+            response_body.extend(format_pkt_line("unpack ok\n"));
             
             // Report success for each ref update
             for update in &push_request.ref_updates {
