@@ -164,8 +164,9 @@ impl HttpHandlers for Component {
 
         // Route the request using Git Dumb HTTP Protocol
         let response = match (request.method.as_str(), request.uri.as_str()) {
-            // Git Dumb HTTP Protocol endpoints
+            // Git Dumb HTTP Protocol endpoints  
             ("GET", "/info/refs") => handle_dumb_info_refs(&repo_state),
+            ("GET", uri) if uri.contains("/info/refs") => handle_dumb_info_refs(&repo_state), // Catch ?service= queries
             ("GET", "/HEAD") => handle_dumb_head(&repo_state),
             ("GET", uri) if uri.starts_with("/objects/") => handle_dumb_object(&repo_state, uri),
             ("GET", uri) if uri.starts_with("/refs/") => handle_dumb_ref(&repo_state, uri),
