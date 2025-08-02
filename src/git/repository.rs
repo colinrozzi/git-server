@@ -20,13 +20,11 @@ pub struct GitRepoState {
 
 impl Default for GitRepoState {
     fn default() -> Self {
-        let mut refs = HashMap::new();
-        refs.insert("refs/heads/main".to_string(), "0000000000000000000000000000000000000000".to_string());
-        
+        // Start with completely empty repository
         Self {
             repo_name: "git-server".to_string(),
-            refs,
-            objects: HashMap::new(),
+            refs: HashMap::new(), // No refs initially
+            objects: HashMap::new(), // No objects initially
             head: "refs/heads/main".to_string(),
         }
     }

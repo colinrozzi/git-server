@@ -38,8 +38,8 @@ impl Guest for Component {
             }
         };
 
-        // Ensure we have some basic objects from the start
-        repo_state.ensure_minimal_objects_debug();
+        // Start with empty repository - objects will come from git push
+        log("Starting with empty repository - ready to receive pushes");
 
         log(&format!(
             "Git repository '{}' initialized with {} refs and {} objects",
