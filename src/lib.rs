@@ -17,6 +17,7 @@ use git::repository::GitRepoState;
 use protocol::dumb_http::{
     create_response, handle_dumb_info_refs, handle_dumb_head, handle_dumb_object, 
     handle_dumb_ref, handle_dumb_object_upload, handle_dumb_ref_update,
+    handle_ref_lock, handle_ref_unlock,
 };
 
 struct Component;
@@ -159,6 +160,23 @@ impl Guest for Component {
             }
         }
 
+        // Add LOCK and DELETE routes for git-http-push support
+        match http_framework::add_route(server_id, "/refs/{*path}", "LOCK", git_handler) {
+            Ok(_) => log("Added LOCK /refs/* route"),
+            Err(e) => {
+                log(&format!("Failed to add LOCK /refs/* route: {}", e));
+                return Err(format!("Failed to add LOCK /refs/* route: {}", e));
+            }
+        }
+
+        match http_framework::add_route(server_id, "/refs/{*path}", "DELETE", git_handler) {
+            Ok(_) => log("Added DELETE /refs/* route"),
+            Err(e) => {
+                log(&format!("Failed to add DELETE /refs/* route: {}", e));
+                return Err(format!("Failed to add DELETE /refs/* route: {}", e));
+            }
+        }
+
         // Start the server
         let actual_port = http_framework::start_server(server_id)
             .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
@@ -201,6 +219,10 @@ impl HttpHandlers for Component {
             // Push support (upload objects and update refs)
             ("PUT", uri) if uri.starts_with("/objects/") => handle_dumb_object_upload(&mut repo_state, uri, &request),
             ("PUT", uri) if uri.starts_with("/refs/") => handle_dumb_ref_update(&mut repo_state, uri, &request),
+            
+            // git-http-push support (locking mechanism)
+            ("LOCK", uri) if uri.starts_with("/refs/") => handle_ref_lock(&mut repo_state, uri, &request),
+            ("DELETE", uri) if uri.starts_with("/refs/") => handle_ref_unlock(&mut repo_state, uri, &request),
 
             // Debug/info endpoints for development
             ("GET", "/") => handle_repo_info(&repo_state),

@@ -182,6 +182,35 @@ pub fn handle_dumb_ref_update(repo_state: &mut GitRepoState, uri: &str, request:
     create_response(200, "text/plain", b"Ref updated")
 }
 
+/// Handle LOCK /refs/heads/branch
+/// Creates a lock for git-http-push protocol
+pub fn handle_ref_lock(repo_state: &mut GitRepoState, uri: &str, request: &HttpRequest) -> HttpResponse {
+    log(&format!("Locking ref: {}", uri));
+    
+    let ref_name = &uri[1..]; // Remove leading "/"
+    
+    // For git-http-push, we need to return the current ref value or create a lock
+    // The lock is conceptual since we're single-threaded
+    
+    if let Some(current_hash) = repo_state.refs.get(ref_name) {
+        // Return current ref value
+        let lock_content = format!("{}\n", current_hash);
+        create_response(200, "text/plain; charset=utf-8", lock_content.as_bytes())
+    } else {
+        // Ref doesn't exist yet, allow creation
+        create_response(200, "text/plain; charset=utf-8", b"0000000000000000000000000000000000000000\n")
+    }
+}
+
+/// Handle DELETE /refs/heads/branch  
+/// Releases a lock for git-http-push protocol
+pub fn handle_ref_unlock(_repo_state: &mut GitRepoState, uri: &str, _request: &HttpRequest) -> HttpResponse {
+    log(&format!("Unlocking ref: {}", uri));
+    
+    // Since we don't actually maintain locks (single-threaded), just acknowledge
+    create_response(200, "text/plain", b"Ref unlocked")
+}
+
 /// Extract object hash from path like "/objects/ab/cdef123..."
 fn extract_object_hash_from_path(path: &str) -> Option<String> {
     // Path format: /objects/ab/cdef123456789...
