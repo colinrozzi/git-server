@@ -1,6 +1,7 @@
 use flate2::write::ZlibEncoder;
+use flate2::read::ZlibDecoder;
 use flate2::Compression;
-use std::io::Write;
+use std::io::{Write, Read};
 
 /// High-performance zlib compression for Git pack files using flate2
 /// 
@@ -17,6 +18,17 @@ pub fn compress_zlib(data: &[u8]) -> Vec<u8> {
     
     // Finish compression and return the compressed bytes
     encoder.finish().expect("Finishing ZlibEncoder should never fail")
+}
+
+/// High-performance zlib decompression for Git objects
+/// 
+/// Decompresses zlib-compressed data (RFC 1950) as used in Git loose objects.
+/// Uses the same high-performance flate2 library with zlib-rs backend.
+pub fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut result = Vec::new();
+    decoder.read_to_end(&mut result)?;
+    Ok(result)
 }
 
 /// Calculate Adler-32 checksum (now mainly for compatibility/testing)
@@ -117,5 +129,25 @@ mod tests {
         assert!(compressed.len() < repetitive_data.len() / 10, 
                "Compressed size {} should be much less than original size {}", 
                compressed.len(), repetitive_data.len());
+    }
+    
+    #[test]
+    fn test_decompress_zlib() {
+        let original = b"Hello, zlib decompression!";
+        let compressed = compress_zlib(original);
+        let decompressed = decompress_zlib(&compressed).unwrap();
+        
+        assert_eq!(decompressed, original);
+    }
+    
+    #[test]
+    fn test_compress_decompress_roundtrip() {
+        let test_data = b"This is test data for compression roundtrip testing. It should compress and decompress perfectly.";
+        
+        let compressed = compress_zlib(test_data);
+        let decompressed = decompress_zlib(&compressed).unwrap();
+        
+        assert_eq!(decompressed, test_data);
+        assert!(compressed.len() < test_data.len()); // Should actually compress
     }
 }
