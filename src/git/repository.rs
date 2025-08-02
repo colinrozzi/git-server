@@ -1,5 +1,5 @@
 use super::objects::{GitObject, TreeEntry};
-use crate::utils::hash::{calculate_git_hash, calculate_git_hash_debug};
+use crate::utils::hash::calculate_git_hash_raw;
 use crate::utils::logging::safe_log as log;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -75,7 +75,7 @@ impl GitRepoState {
         let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
         log(&format!("README content: {:?}", String::from_utf8_lossy(readme_content)));
         
-        let readme_hash = calculate_git_hash("blob", readme_content);
+        let readme_hash = calculate_git_hash_raw("blob", readme_content);
         self.add_object(
             readme_hash.clone(),
             GitObject::Blob {
@@ -90,7 +90,7 @@ impl GitRepoState {
         let tree_content = serialize_tree_object(&tree_entries);
         log(&format!("Tree content bytes: {:?}", tree_content));
         
-        let tree_hash = calculate_git_hash("tree", &tree_content);
+        let tree_hash = calculate_git_hash_raw("tree", &tree_content);
         self.add_object(
             tree_hash.clone(),
             GitObject::Tree {
@@ -111,7 +111,7 @@ impl GitRepoState {
         
         log(&format!("Commit content: {:?}", String::from_utf8_lossy(&commit_content_raw)));
         
-        let commit_hash = calculate_git_hash("commit", &commit_content_raw);
+        let commit_hash = calculate_git_hash_raw("commit", &commit_content_raw);
         self.add_object(
             commit_hash.clone(),
             GitObject::Commit {
@@ -144,13 +144,13 @@ impl GitRepoState {
         
         // Test 1: Simple blob
         let blob_content = b"hello world";
-        let blob_hash = calculate_git_hash("blob", blob_content); 
+        let blob_hash = calculate_git_hash_raw("blob", blob_content); 
         // Should match: echo "hello world" | git hash-object --stdin
         // Expected: 95d09f2b10159347eece71399a7e2e907ea3df4f
         log(&format!("Blob 'hello world': {} (expect: 95d09f2b10159347eece71399a7e2e907ea3df4f)", blob_hash));
         
         // Test 2: Empty tree
-        let empty_tree_hash = calculate_git_hash("tree", &[]);
+        let empty_tree_hash = calculate_git_hash_raw("tree", &[]);
         // Expected: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
         log(&format!("Empty tree: {} (expect: 4b825dc642cb6eb9a060e54bf8d69288fbee4904)", empty_tree_hash));
         
@@ -182,7 +182,7 @@ impl GitRepoState {
         log(&format!("Commit content length: {}", commit_content.len()));
         
         // Calculate hash
-        let commit_hash = calculate_git_hash("commit", commit_content.as_bytes());
+        let commit_hash = calculate_git_hash_raw("commit", commit_content.as_bytes());
         log(&format!("Our calculated hash: {}", commit_hash));
         
         // Create the Git header that goes into the hash calculation
@@ -270,17 +270,17 @@ impl GitRepoState {
             // Re-serialize the object and recalculate its hash
             let (recalculated_hash, serialized_content) = match obj {
                 GitObject::Blob { content } => {
-                    let hash = calculate_git_hash("blob", content);
+                    let hash = calculate_git_hash_raw("blob", content);
                     (hash, content.clone())
                 }
                 GitObject::Tree { entries } => {
                     let serialized = serialize_tree_object(entries);
-                    let hash = calculate_git_hash("tree", &serialized);
+                    let hash = calculate_git_hash_raw("tree", &serialized);
                     (hash, serialized)
                 }
                 GitObject::Commit { tree, parents, author, committer, message } => {
                     let serialized = serialize_commit_object(tree, parents, author, committer, message);
-                    let hash = calculate_git_hash("commit", &serialized);
+                    let hash = calculate_git_hash_raw("commit", &serialized);
                     (hash, serialized)
                 }
                 GitObject::Tag { .. } => {
@@ -339,7 +339,7 @@ impl GitRepoState {
         log(&format!("Creating README blob with {} bytes", readme_content.len()));
         log(&format!("README content: {:?}", String::from_utf8_lossy(readme_content)));
         
-        let readme_hash = calculate_git_hash_debug("blob", readme_content);
+        let readme_hash = calculate_git_hash_raw("blob", readme_content);
         let readme_blob = GitObject::Blob {
             content: readme_content.to_vec(),
         };
@@ -352,7 +352,7 @@ impl GitRepoState {
         log(&format!("Tree entries: {:?}", tree_entries));
         log(&format!("Tree content bytes: {:?}", tree_content));
         
-        let tree_hash = calculate_git_hash_debug("tree", &tree_content);
+        let tree_hash = calculate_git_hash_raw("tree", &tree_content);
         let tree_obj = GitObject::Tree {
             entries: tree_entries,
         };
@@ -364,7 +364,7 @@ impl GitRepoState {
         log(&format!("Creating commit with {} bytes", commit_content.len()));
         log(&format!("Commit content: {:?}", String::from_utf8_lossy(&commit_content)));
         
-        let commit_hash = calculate_git_hash_debug("commit", &commit_content);
+        let commit_hash = calculate_git_hash_raw("commit", &commit_content);
         let commit_obj = GitObject::Commit {
             tree: tree_hash.clone(),
             parents: vec![],

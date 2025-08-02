@@ -42,7 +42,7 @@ pub fn generate_pack_file(repo_state: &GitRepoState, object_hashes: &[String]) -
                     let commit_data = serialize_commit_object(tree, parents, author, committer, message);
                     
                     // Verify the serialized data matches the expected hash
-                    let recalculated_hash = crate::utils::hash::calculate_git_hash("commit", &commit_data);
+                    let recalculated_hash = crate::utils::hash::calculate_git_hash_raw("commit", &commit_data);
                     if recalculated_hash != *hash {
                         log(&format!("CRITICAL: Pack hash mismatch for commit {}", hash));
                         log(&format!("  Expected: {}", hash));
