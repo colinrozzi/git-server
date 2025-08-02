@@ -14,10 +14,9 @@ use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, Middlewar
 use bindings::theater::simple::runtime::log;
 use git::objects::GitObject;
 use git::repository::GitRepoState;
-use protocol::dumb_http::{
-    create_response, handle_dumb_info_refs, handle_dumb_head, handle_dumb_object, 
-    handle_dumb_ref, handle_dumb_object_upload, handle_dumb_ref_update,
-    handle_ref_lock, handle_ref_unlock,
+use protocol::http::{
+    create_response, handle_head, handle_info_refs, handle_object, handle_object_upload,
+    handle_ref, handle_ref_lock, handle_ref_unlock, handle_ref_update,
 };
 
 struct Component;
@@ -42,7 +41,7 @@ impl Guest for Component {
 
         // Start with empty repository - objects will come from git push
         log("Starting with empty repository - ready to receive pushes");
-        
+
         // Add a simple test object so we can test dumb HTTP
         repo_state.ensure_minimal_objects_debug();
 
@@ -126,7 +125,7 @@ impl Guest for Component {
                 return Err(format!("Failed to add /objects/* route: {}", e));
             }
         }
-        
+
         match http_framework::add_route(server_id, "/refs/{*path}", "GET", git_handler) {
             Ok(_) => log("Added GET /refs/* route"),
             Err(e) => {
@@ -134,7 +133,7 @@ impl Guest for Component {
                 return Err(format!("Failed to add /refs/* route: {}", e));
             }
         }
-        
+
         match http_framework::add_route(server_id, "/HEAD", "GET", git_handler) {
             Ok(_) => log("Added GET /HEAD route"),
             Err(e) => {
@@ -209,20 +208,28 @@ impl HttpHandlers for Component {
 
         // Route the request using Git Dumb HTTP Protocol
         let response = match (request.method.as_str(), request.uri.as_str()) {
-            // Git Dumb HTTP Protocol endpoints  
-            ("GET", "/info/refs") => handle_dumb_info_refs(&repo_state),
-            ("GET", uri) if uri.contains("/info/refs") => handle_dumb_info_refs(&repo_state), // Catch ?service= queries
-            ("GET", "/HEAD") => handle_dumb_head(&repo_state),
-            ("GET", uri) if uri.starts_with("/objects/") => handle_dumb_object(&repo_state, uri),
-            ("GET", uri) if uri.starts_with("/refs/") => handle_dumb_ref(&repo_state, uri),
-            
+            // Git Dumb HTTP Protocol endpoints
+            ("GET", "/info/refs") => handle_info_refs(&repo_state),
+            ("GET", uri) if uri.contains("/info/refs") => handle_info_refs(&repo_state), // Catch ?service= queries
+            ("GET", "/HEAD") => handle_head(&repo_state),
+            ("GET", uri) if uri.starts_with("/objects/") => handle_object(&repo_state, uri),
+            ("GET", uri) if uri.starts_with("/refs/") => handle_ref(&repo_state, uri),
+
             // Push support (upload objects and update refs)
-            ("PUT", uri) if uri.starts_with("/objects/") => handle_dumb_object_upload(&mut repo_state, uri, &request),
-            ("PUT", uri) if uri.starts_with("/refs/") => handle_dumb_ref_update(&mut repo_state, uri, &request),
-            
+            ("PUT", uri) if uri.starts_with("/objects/") => {
+                handle_object_upload(&mut repo_state, uri, &request)
+            }
+            ("PUT", uri) if uri.starts_with("/refs/") => {
+                handle_ref_update(&mut repo_state, uri, &request)
+            }
+
             // git-http-push support (WebDAV locking mechanism)
-            ("LOCK", uri) if uri.starts_with("/refs/") => handle_ref_lock(&mut repo_state, uri, &request),
-            ("DELETE", uri) if uri.starts_with("/refs/") => handle_ref_unlock(&mut repo_state, uri, &request),
+            ("LOCK", uri) if uri.starts_with("/refs/") => {
+                handle_ref_lock(&mut repo_state, uri, &request)
+            }
+            ("DELETE", uri) if uri.starts_with("/refs/") => {
+                handle_ref_unlock(&mut repo_state, uri, &request)
+            }
 
             // Debug/info endpoints for development
             ("GET", "/") => handle_repo_info(&repo_state),
