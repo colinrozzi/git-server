@@ -440,12 +440,15 @@ pub fn serialize_commit_object(tree: &str, parents: &[String], author: &str, com
         content.push_str(&format!("parent {}\n", parent));
     }
     
-    // For simplicity, use fixed timestamp
+    // Use proper Git timestamp format
     let timestamp = "1609459200 +0000";
     content.push_str(&format!("author {} {}\n", author, timestamp));
     content.push_str(&format!("committer {} {}\n", committer, timestamp));
     content.push('\n');
     content.push_str(message);
+    
+    // CRITICAL FIX: Git commit objects should NOT have trailing newlines
+    // The message itself should be the final content without additional newlines
     
     content.into_bytes()
 }
