@@ -460,4 +460,22 @@ Special thanks to the WebAssembly Component Model and Theater communities for bu
 
 ---
 
-**Built with ❤️ using Theater, WebAssembly, Rust, and Real SHA-1**
+**Built with ❤️ using Theater, WebAssembly, Rust, and Real SHA-1**://www.dulwich.io/) - Pure Python Git implementation
+
+## 🏆 Acknowledgments
+
+This project demonstrates a complete Git server implementation using the Git Dumb HTTP Protocol, running as a WebAssembly component in the Theater actor system. Key achievements:
+
+- ✅ **Complete Git Protocol** - Full dumb HTTP implementation with read/write support
+- ✅ **Production Architecture** - Actor-based supervision, state persistence, HTTP routing
+- ✅ **Real Git Compatibility** - Works with standard Git clients
+- ✅ **WebAssembly Innovation** - Demonstrates Git server as a WASM component
+- ✅ **Simplicity** - Easier to understand and maintain than Smart HTTP implementations
+
+This represents a practical approach to distributed version control, combining WebAssembly's sandboxing, Theater's supervision, Git's proven protocol, and Rust's memory safety to create a reliable foundation for next-generation Git infrastructure.
+
+The dumb HTTP approach trades some efficiency for reliability and simplicity, making this an excellent choice for many use cases where the overhead of multiple HTTP requests is acceptable in exchange for easier debugging, caching, and maintenance.
+
+---
+
+**Built with ❤️ using Theater, WebAssembly, Rust, and the Git Dumb HTTP Protocol**

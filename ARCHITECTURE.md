@@ -1,8 +1,8 @@
-# Git Server Architecture
+# Git Server Actor Architecture
 
 ## Overview
 
-This document explains the architecture of the Git Server Actor, helping new contributors understand how the components work together to create a WebAssembly-based git remote server.
+This document explains the architecture of the Git Server Actor, which implements the Git Dumb HTTP Protocol as a WebAssembly component running in the Theater actor system.
 
 ## System Architecture
 
@@ -13,7 +13,7 @@ This document explains the architecture of the Git Server Actor, helping new con
 │                        Git Client                               │
 │                    (git clone, push, etc.)                     │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │ HTTP/Git Protocol
+                          │ Git Dumb HTTP Protocol
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Theater Runtime                              │
@@ -22,21 +22,24 @@ This document explains the architecture of the Git Server Actor, helping new con
 │  │               Git Server Actor                            │  │
 │  │  ┌─────────────────────────────────────────────────────┐  │  │
 │  │  │            HTTP Framework                           │  │  │
-│  │  │  • Route registration                               │  │  │
-│  │  │  • Request routing                                  │  │  │
-│  │  │  • Response handling                                │  │  │
+│  │  │  • Route registration (/info/refs, /objects/*, etc) │  │  │
+│  │  │  • Request routing and parsing                      │  │  │
+│  │  │  • Response handling with proper headers           │  │  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  │  ┌─────────────────────────────────────────────────────┐  │  │
-│  │  │          Git Protocol Handler                       │  │  │
-│  │  │  • Smart HTTP Transport                            │  │  │
-│  │  │  • Packet-line encoding                            │  │  │
-│  │  │  • Pack negotiation                                │  │  │
+│  │  │        Git Dumb HTTP Protocol Handler               │  │  │
+│  │  │  • Repository discovery (/info/refs, /HEAD)        │  │  │
+│  │  │  • Object serving (/objects/xx/xxxxxxx)            │  │  │
+│  │  │  • Reference serving (/refs/heads/branch)          │  │  │
+│  │  │  • Push operations (PUT endpoints)                 │  │  │
+│  │  │  • WebDAV locking (LOCK/DELETE)                    │  │  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  │  ┌─────────────────────────────────────────────────────┐  │  │
 │  │  │           Repository State                          │  │  │
-│  │  │  • In-memory git objects                           │  │  │
-│  │  │  • References (branches/tags)                      │  │  │
-│  │  │  • State persistence                               │  │  │
+│  │  │  • In-memory Git objects (blob/tree/commit/tag)    │  │  │
+│  │  │  • References (branches/tags) mapping              │  │  │
+│  │  │  • SHA-1 hash validation                           │  │  │
+│  │  │  • State persistence across requests               │  │  │
 │  │  └─────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
@@ -47,385 +50,233 @@ This document explains the architecture of the Git Server Actor, helping new con
 ### 1. Git Server Actor (WebAssembly Component)
 
 **Location**: `src/lib.rs`
-**Purpose**: Main actor implementation that coordinates all git server functionality
+**Purpose**: Main actor implementation that coordinates all Git server functionality
 
 **Key Responsibilities**:
-- Initialize HTTP server and routes during actor startup
-- Maintain git repository state in memory
-- Handle HTTP requests from git clients
-- Implement git protocol specifications
-- Manage actor lifecycle and error handling
+- Initialize HTTP server and register Git protocol routes
+- Handle incoming HTTP requests and route to appropriate handlers
+- Maintain repository state between requests
+- Integrate with Theater actor lifecycle
 
-**Interfaces Implemented**:
-- `theater:simple/actor` - Basic actor lifecycle
-- `theater:simple/http-handlers` - HTTP request handling
+**Important Functions**:
+- `init()` - Sets up HTTP server and routes, initializes repository
+- `handle_request()` - Routes Git protocol requests to handlers
+- State serialization/deserialization for persistence
 
-### 2. HTTP Framework Integration
+### 2. Git Dumb HTTP Protocol Handler
 
-**Purpose**: Bridges Theater's HTTP capabilities with git protocol requirements
+**Location**: `src/protocol/dumb_http.rs`
+**Purpose**: Implements the Git Dumb HTTP Protocol for repository operations
 
-**Setup Process** (in `init()` function):
-```rust
-// 1. Create HTTP server
-let server_id = http_framework::create_server(&config)?;
+**Key Responsibilities**:
+- Handle repository discovery requests (`/info/refs`, `/HEAD`)
+- Serve individual Git objects (`/objects/xx/xxxxxxx`)
+- Serve reference files (`/refs/heads/branch`)
+- Handle push operations (PUT requests for objects and refs)
+- Support WebDAV locking for concurrent access
 
-// 2. Register handler for git operations  
-let git_handler = http_framework::register_handler("git")?;
+**Protocol Endpoints**:
 
-// 3. Map git protocol routes to handler
-let routes = [
-    ("/info/refs", "GET", git_handler),      // Discovery
-    ("/git-upload-pack", "POST", git_handler), // Clone/fetch
-    ("/git-receive-pack", "POST", git_handler), // Push
-];
+#### Read Operations (Clone/Fetch)
+- `GET /info/refs` → List all repository references
+- `GET /HEAD` → Get current HEAD reference
+- `GET /objects/{hash[0:2]}/{hash[2:]}` → Retrieve Git object
+- `GET /refs/heads/{branch}` → Get branch reference
+- `GET /refs/tags/{tag}` → Get tag reference
 
-// 4. Start server
-http_framework::start_server(server_id)?;
-```
+#### Write Operations (Push)
+- `PUT /objects/{hash[0:2]}/{hash[2:]}` → Upload Git object
+- `PUT /refs/heads/{branch}` → Update branch reference
+- `LOCK /refs/heads/{branch}` → Lock reference for update
+- `DELETE /refs/heads/{branch}` → Release reference lock
 
-**Request Flow**:
-1. Git client makes HTTP request
-2. Theater HTTP framework receives request
-3. Framework routes to registered git handler
-4. Actor's `handle_request()` method called
-5. Request routed to appropriate git protocol handler
-6. Response sent back through framework
+#### Debug Operations
+- `GET /` → Repository information
+- `GET /debug/refs` → List all references
+- `GET /debug/objects` → List all objects
 
-### 3. Git Protocol Implementation
+### 3. Repository State Management
 
-**Purpose**: Implements Git Smart HTTP Transport Protocol specification
+**Location**: `src/git/repository.rs`
+**Purpose**: Manages in-memory Git repository state and object storage
 
-#### Discovery Phase (`handle_info_refs`)
-- Handles `GET /info/refs?service=git-upload-pack`
-- Returns repository capabilities and references
-- Uses packet-line protocol format
-- **Status**: ✅ Complete - works with real git clients
-
-#### Data Transfer Phase (`handle_upload_pack`, `handle_receive_pack`)  
-- Handles `POST /git-upload-pack` (clone/fetch)
-- Handles `POST /git-receive-pack` (push)
-- Manages want/have negotiation
-- Generates/parses pack files
-- **Status**: 🚧 In progress - discovery works, pack negotiation needed
-
-#### Packet-Line Protocol
-Git uses a specific wire format where each line is prefixed with its length:
-```rust
-fn format_pkt_line(line: &str) -> Vec<u8> {
-    let len = line.len() + 4;
-    let len_hex = format!("{:04x}", len);
-    let mut result = len_hex.into_bytes();
-    result.extend(line.as_bytes());
-    result
-}
-```
-
-### 4. Repository State Management
-
-**Purpose**: Maintains git repository data in actor memory
-
-**State Structure**:
+**Data Structures**:
 ```rust
 struct GitRepoState {
-    repo_name: String,                    // Repository identifier
-    refs: HashMap<String, String>,        // branch/tag -> commit hash  
-    objects: HashMap<String, GitObject>,  // object hash -> object data
-    head: String,                         // Current HEAD reference
+    repo_name: String,                    // Repository name
+    refs: HashMap<String, String>,       // ref-name → commit-hash
+    objects: HashMap<String, GitObject>, // object-hash → object-data
+    head: String,                        // HEAD reference (e.g., "refs/heads/main")
+}
+
+enum GitObject {
+    Blob { content: Vec<u8> },
+    Tree { entries: Vec<TreeEntry> },
+    Commit { tree: String, parents: Vec<String>, author: String, committer: String, message: String },
+    Tag { object: String, tag_type: String, tagger: String, message: String },
 }
 ```
+
+**Key Operations**:
+- `add_object()` - Store Git object with hash validation
+- `update_ref()` - Update branch/tag references
+- `serialize_tree_object()` - Convert tree to Git format
+- `serialize_commit_object()` - Convert commit to Git format
+- State validation and integrity checking
+
+### 4. Git Object Management
+
+**Location**: `src/git/objects.rs`
+**Purpose**: Define Git object types and their operations
 
 **Object Types**:
-- **Blob**: File contents
-- **Tree**: Directory listings  
-- **Commit**: Commit metadata + tree reference
-- **Tag**: Annotated tag information
+- **Blob**: File content storage
+- **Tree**: Directory structure with file/subdirectory entries
+- **Commit**: Snapshot with tree reference, parents, and metadata
+- **Tag**: Named reference to any Git object
 
-**Persistence**: 
-- State serialized/deserialized as JSON between requests
-- Theater handles persistence and recovery
-- No external database required
-
-## Data Flow
-
-### Git Clone Request Flow
-
+**Object Format**:
+All objects follow Git's standard format:
 ```
-1. Git Client: git clone http://localhost:8080
-   │
-   ▼
-2. Discovery Request: GET /info/refs?service=git-upload-pack
-   │
-   ▼  
-3. Theater HTTP Framework routes to Git Server Actor
-   │
-   ▼
-4. Actor.handle_request() -> handle_info_refs()
-   │
-   ▼
-5. Generate packet-line response with repository refs
-   │
-   ▼
-6. Git Client receives refs, starts pack negotiation
-   │
-   ▼
-7. Pack Request: POST /git-upload-pack (want/have data)
-   │
-   ▼
-8. Actor.handle_request() -> handle_upload_pack()
-   │
-   ▼
-9. 🚧 Parse wants/haves, generate pack file, send ACK/NAK
-   │
-   ▼
-10. Git Client receives pack data, creates local repository
+<type> <size>\0<content>
 ```
 
-### Current Implementation Status
+Where content varies by type:
+- Blob: Raw file bytes
+- Tree: Mode/name/hash entries
+- Commit: tree/parent/author/committer/message lines
+- Tag: object/type/tagger/message lines
 
-**✅ Working (Steps 1-6)**:
-- Git client can discover repository
-- Packet-line protocol correctly implemented
-- HTTP routing functional
-- State management working
+### 5. Hash and Compression Utilities
 
-**🚧 In Progress (Steps 7-10)**:
-- Pack negotiation parsing needed
-- Pack file generation required
-- ACK/NAK response implementation
+**Location**: `src/utils/hash.rs`, `src/utils/compression.rs`
+**Purpose**: SHA-1 hash calculation and zlib compression for Git compatibility
 
-## Extension Points
+**Hash Operations**:
+- `calculate_git_hash_raw()` - Calculate SHA-1 with Git object header
+- `calculate_git_hash()` - Calculate hash for GitObject instances
+- Hash validation for object integrity
 
-### Adding New Git Operations
+**Compression Operations**:
+- `compress_zlib()` - Compress data using zlib (Git loose object format)
+- `decompress_zlib()` - Decompress zlib data for object parsing
+- Proper Adler-32 checksum handling
 
-To add support for new git operations:
+## Protocol Flow
 
-1. **Add route** in `init()`:
-```rust
-("/new-endpoint", "GET", git_handler)
+### Clone Operation
+```
+1. git clone http://localhost:8080 repo
+2. GET /info/refs → Returns all available references
+3. GET /HEAD → Returns current HEAD reference  
+4. GET /refs/heads/main → Returns main branch commit hash
+5. GET /objects/xx/xxxx → Downloads commit object
+6. GET /objects/xx/xxxx → Downloads tree object
+7. GET /objects/xx/xxxx → Downloads blob objects
+8. Git reconstructs working directory
 ```
 
-2. **Add handler** in `handle_request()`:  
-```rust
-("GET", "/new-endpoint") => handle_new_operation(&repo_state, &request)
+### Push Operation
+```
+1. git push http://localhost:8080 main
+2. LOCK /refs/heads/main → Acquire exclusive lock
+3. PUT /objects/xx/xxxx → Upload new blob objects
+4. PUT /objects/xx/xxxx → Upload new tree object
+5. PUT /objects/xx/xxxx → Upload new commit object
+6. PUT /refs/heads/main → Update branch reference
+7. DELETE /refs/heads/main → Release lock
 ```
 
-3. **Implement handler function**:
-```rust
-fn handle_new_operation(repo_state: &GitRepoState, request: &HttpRequest) -> HttpResponse {
-    // Implementation here
-}
-```
+## State Persistence
 
-### Adding Repository Features
+The actor maintains repository state across requests using Theater's state persistence:
 
-To extend repository functionality:
+1. **Initialization**: State loaded from previous session or created fresh
+2. **Request Processing**: State modified during Git operations
+3. **Response**: Updated state serialized and saved
+4. **Actor Restart**: State automatically restored from last save
 
-1. **Update State Structure**:
-```rust
-struct GitRepoState {
-    // ... existing fields
-    new_feature: HashMap<String, FeatureData>,
-}
-```
+## Error Handling
 
-2. **Add State Migration**:
-```rust
-fn migrate_state(old_state: OldGitRepoState) -> GitRepoState {
-    // Handle backward compatibility
-}
-```
+The implementation includes comprehensive error handling:
 
-3. **Update Serialization**:
-```rust
-let new_state = serde_json::to_vec(&updated_repo_state)?;
-```
+- **HTTP Level**: Proper status codes (200, 404, 400, etc.)
+- **Git Level**: Object validation, hash verification, reference checking
+- **Actor Level**: State serialization errors, HTTP server failures
+- **Logging**: Detailed logging for debugging and monitoring
 
-### Theater Actor Integration
+## Security Considerations
 
-To add new Theater capabilities:
+Current implementation focuses on functionality over security:
 
-1. **Add Handler in Manifest**:
-```toml
-[[handler]]
-type = "new-handler"
-config = { /* options */ }
-```
+- **No Authentication**: All operations are anonymous
+- **No Authorization**: No access control on repositories
+- **Input Validation**: SHA-1 hash format and object structure validation
+- **Memory Safety**: Rust's memory safety prevents buffer overflows
 
-2. **Import in Code**:
-```rust
-use bindings::theater::simple::new_handler;
-```
+Future security enhancements could include:
+- Token-based authentication
+- Repository-level access control
+- Rate limiting
+- Audit logging
 
-3. **Use in Actor**:
-```rust
-let result = new_handler::some_operation(data)?;
-```
+## Performance Characteristics
 
-## Performance Considerations
+**Advantages of Dumb HTTP**:
+- Simple request/response pattern
+- Stateless operations
+- HTTP caching friendly
+- Easy to debug and monitor
 
-### Memory Usage
-- Repository state kept entirely in memory
-- Large repositories may require optimization
-- Consider implementing object streaming for large repos
+**Trade-offs**:
+- More HTTP requests than Smart HTTP
+- No delta compression (larger transfer sizes)
+- Higher latency for large repositories
 
-### Request Handling
-- Single-threaded actor model (Theater handles concurrency)
-- State mutations are atomic within single request
-- Long-running operations should yield control
+**Scalability**:
+- Memory usage proportional to repository size
+- CPU usage dominated by SHA-1 calculations and zlib compression
+- Network usage higher than Smart HTTP but cacheable
 
-### Pack File Generation
-- Most computationally expensive operation
-- Consider caching pack files for popular refs
-- Implement incremental pack generation
+## Future Enhancements
 
-## Security Model
+### Short Term
+- Multi-repository support (different repository names)
+- Basic authentication and authorization
+- HTTP caching headers for better performance
+- Comprehensive error messages
 
-### WebAssembly Sandboxing
-- Actor runs in isolated WASM environment
-- Can only access explicitly granted capabilities
-- Theater enforces resource limits
+### Medium Term
+- Pack file generation for efficient large repository handling
+- Repository management API (create/delete repositories)
+- Web interface for repository browsing
+- Metrics and monitoring endpoints
 
-### Git Protocol Security
-- Currently no authentication implemented
-- All operations are public
-- Future: Add authentication layer
+### Long Term
+- Repository replication and synchronization
+- Integration with external authentication systems
+- Advanced caching strategies
+- Support for Git LFS (Large File Storage)
 
-### Theater Security
-- All operations logged in event chain
-- Audit trail for all git operations
-- Supervision tree provides fault isolation
+## Development Guidelines
 
-## Testing Strategy
+### Adding New Features
+1. Update the appropriate module (`protocol/`, `git/`, `utils/`)
+2. Add comprehensive logging for debugging
+3. Update tests and documentation
+4. Ensure proper error handling
+5. Validate Git protocol compliance
 
-### Unit Tests
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_packet_line_format() {
-        let result = format_pkt_line("hello");
-        assert_eq!(result, b"0009hello");
-    }
-}
-```
+### Testing Strategy
+- Unit tests for individual components
+- Integration tests with real Git clients
+- Performance testing with various repository sizes
+- Error condition testing (network failures, invalid data)
 
-### Integration Tests
-```bash
-# Test with real git client
-git ls-remote http://localhost:8080
-git clone http://localhost:8080 test-repo
-```
+### Code Organization
+- Keep protocol logic separate from object management
+- Use proper error types instead of strings
+- Follow Rust best practices for WebAssembly
+- Maintain compatibility with Theater actor model
 
-### Protocol Compliance Tests
-```bash
-# Test discovery phase
-curl "http://localhost:8080/info/refs?service=git-upload-pack"
-
-# Test pack negotiation (future)
-curl -X POST http://localhost:8080/git-upload-pack -d "want ..."
-```
-
-## Debugging Guide
-
-### Common Issues
-
-**"Actor failed to start"**
-- Check component compilation: `cargo component build --release`
-- Verify manifest.toml points to correct WASM file
-- Check Theater server logs: `theater-server --log-stdout`
-
-**"Connection refused"**
-- Verify HTTP server started successfully
-- Check port 8080 is available
-- Look for HTTP framework setup errors in logs
-
-**"Git protocol errors"**
-- Check packet-line formatting
-- Verify Content-Type headers
-- Compare responses with git protocol spec
-
-### Debugging Tools
-
-**Theater CLI**:
-```bash
-theater list              # Show running actors
-theater events <actor-id> # View actor event chain
-theater stop <actor-id>   # Stop specific actor
-```
-
-**HTTP Debugging**:
-```bash
-curl -v http://localhost:8080/           # Verbose HTTP request
-wireshark                                # Capture network traffic
-git -c http.verbose=true clone ...       # Verbose git client
-```
-
-**Component Debugging**:
-```bash
-wasm-objdump -x target/wasm32-wasip1/release/git_server.wasm  # Inspect WASM
-wasm-validate target/wasm32-wasip1/release/git_server.wasm    # Validate WASM
-```
-
-## Future Architecture Considerations
-
-### Scaling
-- **Multiple Repositories**: One actor per repository vs shared actors
-- **Load Balancing**: Distribute repositories across multiple actors
-- **Caching**: Implement pack file and object caching strategies
-
-### Persistence
-- **Database Integration**: Store objects in external database
-- **File System**: Use Theater filesystem handler for object storage
-- **Distributed Storage**: Replicate across multiple Theater nodes
-
-### Microservices Architecture
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Git Frontend  │    │  Auth Service   │    │ Object Storage  │
-│     Actor       │◄──►│     Actor       │    │     Actor       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                                              ▲
-         ▼                                              │
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Pack Generator │    │   Ref Manager   │    │   Event Logger  │
-│     Actor       │    │     Actor       │    │     Actor       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
-
-### Integration Opportunities
-- **CI/CD Pipelines**: Trigger builds on push
-- **Code Review**: Integration with review systems  
-- **Backup Systems**: Automated repository backup
-- **Monitoring**: Repository usage and performance metrics
-
-## Contributing Guidelines
-
-### Code Style
-- Follow Rust standard formatting: `cargo fmt`
-- Use clippy for linting: `cargo clippy`
-- Document public APIs with `///` comments
-- Add unit tests for new functionality
-
-### Git Protocol Changes
-- Refer to official Git documentation
-- Test with multiple git client versions
-- Ensure backward compatibility
-- Add protocol compliance tests
-
-### Theater Integration
-- Follow Theater actor patterns
-- Use proper error handling
-- Log important events
-- Respect resource limits
-
-### Documentation
-- Update README.md for user-facing changes
-- Update this architecture doc for internal changes
-- Add inline code comments for complex logic
-- Include examples in documentation
-
----
-
-**This architecture enables a scalable, secure, and observable git server built on modern WebAssembly and actor system foundations.**
+This architecture provides a solid foundation for a Git server that's simple to understand, maintain, and extend while remaining fully compatible with standard Git clients.
