@@ -110,8 +110,8 @@ pub fn handle_receive_pack_discovery(repo_state: &GitRepoState) -> HttpResponse 
     
     // Advertise refs with capabilities
     if repo_state.refs.is_empty() {
-        // Empty repository - advertise capabilities only
-        let capabilities_line = "0000000000000000000000000000000000000000 capabilities^{}\0report-status delete-refs side-band-64k\n";
+        // Empty repository - advertise capabilities only  
+        let capabilities_line = "0000000000000000000000000000000000000000 capabilities^{}\0report-status delete-refs\n";
         response_body.extend(format_pkt_line(capabilities_line));
     } else {
         // Normal repository - advertise refs
@@ -119,7 +119,7 @@ pub fn handle_receive_pack_discovery(repo_state: &GitRepoState) -> HttpResponse 
         for (ref_name, commit_hash) in &repo_state.refs {
             let ref_line = if first_ref {
                 first_ref = false;
-                format!("{} {}\0report-status delete-refs side-band-64k\n", commit_hash, ref_name)
+                format!("{} {}\0report-status delete-refs\n", commit_hash, ref_name)
             } else {
                 format!("{} {}\n", commit_hash, ref_name)
             };
@@ -263,11 +263,14 @@ pub fn handle_receive_pack(repo_state: &mut GitRepoState, request: &HttpRequest)
             // Report success for each ref update
             for update in &push_request.ref_updates {
                 let status_line = format!("ok {}\n", update.ref_name);
+                log(&format!("Adding ref status: {:?}", status_line));
                 response_body.extend(format_pkt_line(&status_line));
             }
             
             // End with flush packet
             response_body.extend(flush_packet());
+            
+            log(&format!("Generated response: {} bytes", response_body.len()));
             
             log(&format!("Push completed successfully, {} refs updated", push_request.ref_updates.len()));
             
