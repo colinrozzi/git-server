@@ -1,5 +1,5 @@
-use super::packet_line::{format_pkt_line, flush_packet};
-use super::negotiation::{parse_upload_pack_request, generate_negotiation_response, determine_objects_to_send, UploadPackRequest};
+use super::packet_line::{format_pkt_line, flush_packet, parse_packet_line};
+use super::negotiation::{parse_upload_pack_request, generate_negotiation_response, determine_objects_to_send};
 use crate::git::repository::GitRepoState;
 use crate::git::pack::{generate_pack_file, generate_empty_pack};
 use crate::utils::logging::safe_log as log;
@@ -109,15 +109,22 @@ pub fn handle_receive_pack_discovery(repo_state: &GitRepoState) -> HttpResponse 
     response_body.extend(flush_packet()); // Flush packet
     
     // Advertise refs with capabilities
-    let mut first_ref = true;
-    for (ref_name, commit_hash) in &repo_state.refs {
-        let ref_line = if first_ref {
-            first_ref = false;
-            format!("{} {}\0report-status delete-refs side-band-64k\n", commit_hash, ref_name)
-        } else {
-            format!("{} {}\n", commit_hash, ref_name)
-        };
-        response_body.extend(format_pkt_line(&ref_line));
+    if repo_state.refs.is_empty() {
+        // Empty repository - advertise capabilities only
+        let capabilities_line = "0000000000000000000000000000000000000000 capabilities^{}\0report-status delete-refs side-band-64k\n";
+        response_body.extend(format_pkt_line(capabilities_line));
+    } else {
+        // Normal repository - advertise refs
+        let mut first_ref = true;
+        for (ref_name, commit_hash) in &repo_state.refs {
+            let ref_line = if first_ref {
+                first_ref = false;
+                format!("{} {}\0report-status delete-refs side-band-64k\n", commit_hash, ref_name)
+            } else {
+                format!("{} {}\n", commit_hash, ref_name)
+            };
+            response_body.extend(format_pkt_line(&ref_line));
+        }
     }
     
     response_body.extend(flush_packet()); // End of refs
@@ -209,25 +216,141 @@ pub fn handle_upload_pack(repo_state: &mut GitRepoState, request: &HttpRequest) 
 }
 
 /// Handle receive-pack data transfer (push)
-/// 
-/// TODO: Implement push protocol
-/// - Parse incoming pack file
-/// - Update refs
-/// - Send status report
-pub fn handle_receive_pack(_repo_state: &mut GitRepoState, _request: &HttpRequest) -> HttpResponse {
-    log("Handling receive-pack request (push data transfer)");
+pub fn handle_receive_pack(repo_state: &mut GitRepoState, request: &HttpRequest) -> HttpResponse {
+    log("Handling receive-pack request (git push)");
     
-    // For now, return a minimal response
-    // TODO: Parse pack file from request body
-    // TODO: Update refs based on push
+    let body = match &request.body {
+        Some(data) => data,
+        None => {
+            log("No body in receive-pack request");
+            return create_response(400, "text/plain", b"Bad Request: missing body");
+        }
+    };
     
-    let response_body = flush_packet(); // Empty response for now
+    log(&format!("Receive-pack request body: {} bytes", body.len()));
     
-    create_response(
-        200,
-        "application/x-git-receive-pack-result",
-        &response_body
-    )
+    // Parse the push request
+    match parse_receive_pack_request(body) {
+        Ok(push_request) => {
+            log(&format!("Parsed push request with {} ref updates", push_request.ref_updates.len()));
+            
+            // Process ref updates
+            for update in &push_request.ref_updates {
+                log(&format!("Ref update: {} {} -> {}", update.ref_name, update.old_hash, update.new_hash));
+                
+                if update.new_hash == "0000000000000000000000000000000000000000" {
+                    // Delete ref
+                    repo_state.refs.remove(&update.ref_name);
+                    log(&format!("Deleted ref: {}", update.ref_name));
+                } else {
+                    // Update/create ref
+                    repo_state.refs.insert(update.ref_name.clone(), update.new_hash.clone());
+                    log(&format!("Updated ref {} to {}", update.ref_name, update.new_hash));
+                }
+            }
+            
+            // TODO: Parse and store pack file objects
+            if let Some(pack_data) = &push_request.pack_data {
+                log(&format!("Received pack file: {} bytes", pack_data.len()));
+            }
+            
+            // Generate success response
+            let mut response_body = Vec::new();
+            
+            // Report success for each ref update
+            for update in &push_request.ref_updates {
+                let status_line = format!("ok {}\n", update.ref_name);
+                response_body.extend(format_pkt_line(&status_line));
+            }
+            
+            // End with flush packet
+            response_body.extend(flush_packet());
+            
+            log(&format!("Push completed successfully, {} refs updated", push_request.ref_updates.len()));
+            
+            create_response(
+                200,
+                "application/x-git-receive-pack-result",
+                &response_body
+            )
+        }
+        Err(e) => {
+            log(&format!("Failed to parse receive-pack request: {}", e));
+            create_response(400, "text/plain", format!("Bad Request: {}", e).as_bytes())
+        }
+    }
+}
+
+// Data structures for Git push (receive-pack)
+#[derive(Debug)]
+pub struct ReceivePackRequest {
+    pub ref_updates: Vec<RefUpdate>,
+    pub pack_data: Option<Vec<u8>>,
+}
+
+#[derive(Debug)]
+pub struct RefUpdate {
+    pub old_hash: String,
+    pub new_hash: String,
+    pub ref_name: String,
+}
+
+/// Parse a receive-pack request (git push)
+pub fn parse_receive_pack_request(data: &[u8]) -> Result<ReceivePackRequest, String> {
+    log(&format!("Parsing receive-pack request: {} bytes", data.len()));
+    
+    let mut ref_updates = Vec::new();
+    let mut pos = 0;
+    
+    // Parse ref updates using packet-line format
+    while pos < data.len() {
+        match parse_packet_line(data, pos) {
+            Some((packet_content, consumed)) => {
+                pos += consumed;
+                
+                if packet_content.is_empty() {
+                    // Flush packet - end of ref updates
+                    break;
+                }
+                
+                let line = String::from_utf8_lossy(&packet_content);
+                log(&format!("Parsing ref update line: {:?}", line.trim()));
+                
+                // Parse ref update: <old-hash> <new-hash> <ref-name>[\0<capabilities>]
+                let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                if parts.len() >= 3 {
+                    let ref_name = parts[2].split('\0').next().unwrap_or(parts[2]); // Remove capabilities
+                    
+                    ref_updates.push(RefUpdate {
+                        old_hash: parts[0].to_string(),
+                        new_hash: parts[1].to_string(),
+                        ref_name: ref_name.to_string(),
+                    });
+                }
+            }
+            None => {
+                // Can't parse more packet lines, remaining data might be pack file
+                break;
+            }
+        }
+    }
+    
+    // Remaining data is pack file (if any)
+    let pack_data = if pos < data.len() {
+        Some(data[pos..].to_vec())
+    } else {
+        None
+    };
+    
+    log(&format!("Parsed {} ref updates, pack data: {} bytes", 
+        ref_updates.len(), 
+        pack_data.as_ref().map(|d| d.len()).unwrap_or(0)
+    ));
+    
+    Ok(ReceivePackRequest {
+        ref_updates,
+        pack_data,
+    })
 }
 
 #[cfg(test)]
