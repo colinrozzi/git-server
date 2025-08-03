@@ -4,8 +4,6 @@
 //! Addresses the "protocol v2 not implemented yet" error
 
 use crate::git::repository::GitRepoState;
-use crate::git::pack::parse_pack_file;
-use crate::git::objects::GitObject;
 use crate::utils::logging::safe_log as log;
 
 /// Structure to hold ref updates from push
@@ -116,89 +114,23 @@ impl ProtocolV2Parser {
             capabilities,
         })
     }
-}
 
-/// Updated receive-pack handler for Protocol v2
-pub fn handle_receive_pack_v2(repo_state: &mut GitRepoState, request: &HttpRequest) -> Vec<u8> {
-    use crate::protocol::http::{create_status_response, encode_pkt_line};
-    
-    let body = match &request.body {
-        Some(body) => body,
-        None => {
-            log("No request body");
-            return create_status_response(false, &["unpack missing-request"]).body.unwrap_or_default();
+    /// Helper to validate push requirements
+    pub fn validate_push_request(ref_updates: &[RefUpdate], repo_state: &GitRepoState) -> Result<(), String> {
+        // Check if we're creating new refs in empty repository
+        if repo_state.refs.is_empty() && !ref_updates.is_empty() {
+            log("Empty repository - accepting first push");
+            return Ok(());
         }
-    };
-    
-    match ProtocolV2Parser::parse_receive_pack_request(body) {
-        Ok(push_request) => {
-            log("Processing incoming push...");
-            
-            // Handle empty repository edge case
-            if repo_state.refs.is_empty() && push_request.ref_updates.is_empty() {
-                log("Empty repository, waiting for pack data...");
-            }
-            
-            // Process ref updates
-            let ref_updates = push_request.ref_updates;
-            let pack_data = push_request.pack_data;
-            
-            if ref_updates.is_empty() && pack_data.is_empty() {
-                return create_status_response(true, &[]).body.unwrap_or_default();
-            }
-            
-            if !ref_updates.is_empty() {
-                log(&format!("Processing {} ref updates", ref_updates.len()));
-            }
-            
-            match repo_state.process_push_operation(&pack_data, 
-                ref_updates.into_iter()
-                    .map(|update| (update.ref_name, update.old_oid, update.new_oid))
-                    .collect()
-            ) {
-                Ok(updated_refs) => {
-                    log("Push operation successful!");
-                    let ref_statuses: Vec<String> = updated_refs.iter()
-                        .map(|status| {
-                            if status.starts_with("create ") {
-                                format!("ok {}", &status[7..])
-                            } else if status.starts_with("update ") {
-                                format!("ok {}", &status[7..])
-                            } else {
-                                status.clone()
-                            }
-                        })
-                        .collect();
-                    create_status_response(true, &ref_statuses).body.unwrap_or_default()
-                }
-                Err(e) => {
-                    log(&format!("Push failed: {}", e));
-                    create_status_response(false, &[&format!("unpack {}", e)]).body.unwrap_or_default()
-                }
+        
+        for update in ref_updates {
+            if update.old_oid.len() != 40 || update.new_oid.len() != 40 {
+                return Err("Invalid OID format".to_string());
             }
         }
-        Err(e) => {
-            log(&format!("Parse error: {}", e));
-            create_status_response(false, &[&format!("unpack {}", e)]).body.unwrap_or_default()
-        }
+        
+        Ok(())
     }
-}
-
-/// Helper to validate push requirements
-pub fn validate_push_request(ref_updates: &[RefUpdate], repo_state: &GitRepoState) -> Result<(), String> {
-    // Check if we're creating new refs in empty repository
-    if repo_state.refs.is_empty() && !ref_updates.is_empty() {
-        log("Empty repository - accepting first push");
-        return Ok(());
-    }
-    
-    for update in ref_updates {
-        if update.old_oid.len() != 40 || update.new_oid.len() != 40 {
-            return Err("Invalid OID format".to_string());
-        }
-    }
-    
-    Ok(())
 }
 
 #[cfg(test)]
@@ -207,9 +139,15 @@ mod tests {
     
     #[test]
     fn test_parse_ref_update() {
-        let test_data = b"000crefs/heads/main 0000... new-oid\nPACK...";
+        let test_data = b"0036340e325d1b85b3c0d5d7d8c5d46efad08fcd8 0000000000000000000000000000000000000000 refs/heads/main\nPACK...";
         let result = ProtocolV2Parser::parse_receive_pack_request(test_data);
         assert!(result.is_ok());
+        
+        if let Ok(request) = result {
+            assert_eq!(request.ref_updates.len(), 1);
+            assert_eq!(request.ref_updates[0].ref_name, "refs/heads/main");
+            assert!(request.ref_updates[0].old_oid.chars().all(|c| c == '0'));
+        }
     }
     
     #[test]
@@ -221,7 +159,6 @@ mod tests {
         if let Ok(request) = result {
             assert_eq!(request.ref_updates.len(), 1);
             assert_eq!(request.ref_updates[0].ref_name, "refs/heads/main");
-            assert_eq!(request.ref_updates[0].old_oid.chars().all(|c| c == '0'), true);
         }
     }
 }

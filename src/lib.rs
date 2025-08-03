@@ -15,7 +15,7 @@ use bindings::theater::simple::runtime::log;
 use git::objects::GitObject;
 use git::repository::GitRepoState;
 use protocol::http::{
-    create_response, extract_service_from_query, handle_smart_info_refs,
+    create_response, handle_smart_info_refs,
     handle_upload_pack_request, handle_receive_pack_request,
 };
 
@@ -173,7 +173,7 @@ impl HttpHandlers for Component {
         let response = match path {
             "/info/refs" => {
                 log("🔍 Processing capability advertisement (Protocol v2)");
-                if let Some(service) = extract_service_from_query(&query) {
+                if let Some(service) = query.as_ref().and_then(|q| q.split('&').find(|p| p.starts_with("service=")).map(|p| p[8..].to_string())) {
                     handle_smart_info_refs(&repo_state, &service)
                 } else {
                     create_response(400, "text/plain", b"Missing service parameter")
