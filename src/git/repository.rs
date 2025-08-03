@@ -614,6 +614,7 @@ impl GitRepoState {
 
         // Phase 2: Validate all ref targets exist
         for (_, _, new_oid) in &ref_updates {
+            log(&format!("Validating new OID {} for ref update", new_oid));
             if !self.objects.contains_key(new_oid) {
                 return Err(format!(
                     "Ref update validation failed: object {} not found",
