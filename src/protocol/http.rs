@@ -1,14 +1,13 @@
-// Git Protocol v2 HTTP Implementation - CORRECTED
-// Clean implementation addressing "protocol v2 not implemented yet" error
+// Git Protocol Handler - Supporting both v1 and v2
+// FIXED: Handle Protocol v1 fallback for push operations
 
 use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
 use crate::git::repository::GitRepoState;
 use crate::protocol::protocol_v2_parser::ProtocolV2Parser;
 use crate::utils::logging::safe_log as log;
-use std::collections::HashSet;
 
 // ============================================================================
-// PROTOCOL V2 CONSTANTS
+// PROTOCOL CONSTANTS
 // ============================================================================
 
 pub const PROTOCOL_VERSION: &str = "version 2";
@@ -17,43 +16,80 @@ pub const DELIM_PKT: &[u8] = b"0001";
 pub const RESPONSE_END_PKT: &[u8] = b"0002";
 
 // ============================================================================
-// MAIN PROTOCOL V2 HANDLERS - FIXED
+// MAIN PROTOCOL HANDLERS - FIXED FOR DUAL PROTOCOL SUPPORT
 // ============================================================================
 
-/// Handle GET /info/refs - Protocol v2 capability advertisement
+/// Handle GET /info/refs - Support both Protocol v1 and v2
 pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpResponse {
-    log(&format!("Generating Protocol v2 capability advertisement for service: {}", service));
+    log(&format!("Processing info/refs request for service: {}", service));
+    
+    match service {
+        "git-upload-pack" => {
+            // Upload-pack supports Protocol v2
+            handle_upload_pack_info_refs()
+        }
+        "git-receive-pack" => {
+            // Receive-pack falls back to Protocol v1 for compatibility
+            handle_receive_pack_info_refs_v1(repo_state)
+        }
+        _ => create_error_response("Unknown service")
+    }
+}
+
+/// Protocol v2 capability advertisement for upload-pack (fetch operations)
+fn handle_upload_pack_info_refs() -> HttpResponse {
+    log("Generating Protocol v2 capability advertisement for upload-pack");
     
     let mut response_data = Vec::new();
     
-    // Protocol v2 mandatory format
+    // Protocol v2 format for upload-pack
     response_data.extend(encode_pkt_line(b"version 2\n"));
     response_data.extend(encode_pkt_line(b"agent=git-server/0.1.0\n"));
     response_data.extend(encode_pkt_line(b"object-format=sha1\n"));
+    response_data.extend(encode_pkt_line(b"server-option\n"));
+    response_data.extend(encode_pkt_line(b"ls-refs=symrefs peel ref-prefix unborn\n"));
+    response_data.extend(encode_pkt_line(b"fetch=shallow thin-pack no-progress include-tag ofs-delta sideband-all wait-for-done\n"));
+    response_data.extend(encode_pkt_line(b"object-info=size\n"));
+    response_data.extend(encode_flush_pkt());
     
-    match service {
-        "git-receive-pack" => {
-            // Push operations capabilities
-            response_data.extend(encode_pkt_line(b"receive-pack=report-status delete-refs side-band-64k quiet atomic\n"));
-            response_data.extend(encode_pkt_line(b"ofs-delta\n"));
-        }
-        "git-upload-pack" | _ => {
-            // Clone/pull operations capabilities
-            response_data.extend(encode_pkt_line(b"server-option\n"));
-            response_data.extend(encode_pkt_line(b"ls-refs=symrefs peel ref-prefix unborn\n"));
-            response_data.extend(encode_pkt_line(b"fetch=shallow thin-pack no-progress include-tag ofs-delta sideband-all wait-for-done\n"));
-            response_data.extend(encode_pkt_line(b"object-info=size\n"));
+    create_response(200, "application/x-git-upload-pack-advertisement", &response_data)
+}
+
+/// Protocol v1 capability advertisement for receive-pack (push operations)
+fn handle_receive_pack_info_refs_v1(repo_state: &GitRepoState) -> HttpResponse {
+    log("Generating Protocol v1 capability advertisement for receive-pack (push compatibility)");
+    
+    let mut response_data = Vec::new();
+    
+    // Protocol v1 format - advertise refs first, then capabilities
+    if repo_state.refs.is_empty() {
+        // Empty repository - advertise capabilities on the null ref
+        let capabilities = "report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git-server/0.1.0";
+        let line = format!("0000000000000000000000000000000000000000 capabilities^{{{}}}\n", capabilities);
+        response_data.extend(encode_pkt_line(line.as_bytes()));
+    } else {
+        // Advertise existing refs with capabilities on the first ref
+        let mut refs: Vec<_> = repo_state.refs.iter().collect();
+        refs.sort_by_key(|(name, _)| *name);
+        
+        let mut first_ref = true;
+        for (ref_name, hash) in refs {
+            if first_ref {
+                // First ref includes capabilities
+                let capabilities = "report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git-server/0.1.0";
+                let line = format!("{} {}\0{}\n", hash, ref_name, capabilities);
+                response_data.extend(encode_pkt_line(line.as_bytes()));
+                first_ref = false;
+            } else {
+                let line = format!("{} {}\n", hash, ref_name);
+                response_data.extend(encode_pkt_line(line.as_bytes()));
+            }
         }
     }
     
     response_data.extend(encode_flush_pkt());
     
-    let content_type = match service {
-        "git-receive-pack" => "application/x-git-receive-pack-advertisement",
-        _ => "application/x-git-upload-pack-advertisement",
-    };
-    
-    create_response(200, content_type, &response_data)
+    create_response(200, "application/x-git-receive-pack-advertisement", &response_data)
 }
 
 /// Handle POST /git-upload-pack - Protocol v2 command processing
@@ -62,7 +98,7 @@ pub fn handle_upload_pack_request(repo_state: &mut GitRepoState, request: &HttpR
     
     let body = match &request.body {
         Some(b) => b,
-        None => return create_status_response(false, vec!["unpack missing-request".to_string()]),
+        None => return create_error_response("Missing request body"),
     };
     
     let parsed = match parse_command_request(body) {
@@ -78,53 +114,163 @@ pub fn handle_upload_pack_request(repo_state: &mut GitRepoState, request: &HttpR
     }
 }
 
-/// CORRECTED: Handle POST /git-receive-pack using new Protocol v2 binary parser
+/// Handle POST /git-receive-pack - Protocol v1 push processing
 pub fn handle_receive_pack_request(repo_state: &mut GitRepoState, request: &HttpRequest) -> HttpResponse {
-    log("🎯 Processing Protocol v2 receive-pack (CORRECTED)");
+    log("Processing Protocol v1 receive-pack (push) request");
     
     let body = match &request.body {
         Some(b) => b,
         None => return create_status_response(false, vec!["unpack missing-request".to_string()]),
     };
     
-    match ProtocolV2Parser::parse_receive_pack_request(body) {
-        Ok(push) => {
-            log(&format!("✅ Parsed {} ref updates, {} bytes pack", 
-                        push.ref_updates.len(), push.pack_data.len()));
+    // Try Protocol v2 parsing first (for future compatibility)
+    if let Ok(push) = ProtocolV2Parser::parse_receive_pack_request(body) {
+        log("Parsed as Protocol v2 push request");
+        return handle_v2_push(repo_state, push);
+    }
+    
+    // Fall back to Protocol v1 parsing
+    log("Parsing as Protocol v1 push request");
+    match parse_v1_receive_pack_request(body) {
+        Ok(push) => handle_v1_push(repo_state, push),
+        Err(e) => create_status_response(false, vec![format!("unpack {}", e)])
+    }
+}
+
+// ============================================================================
+// PROTOCOL V1 PUSH PARSING (for compatibility)
+// ============================================================================
+
+#[derive(Debug)]
+struct V1PushRequest {
+    ref_updates: Vec<(String, String, String)>, // (ref_name, old_oid, new_oid)
+    pack_data: Vec<u8>,
+}
+
+fn parse_v1_receive_pack_request(data: &[u8]) -> Result<V1PushRequest, String> {
+    log("Parsing Protocol v1 receive-pack request");
+    
+    let mut cursor = 0;
+    let mut ref_updates = Vec::new();
+    let mut pack_start = 0;
+    
+    // Phase 1: Parse ref update commands
+    while cursor < data.len() {
+        if cursor + 4 > data.len() { break; }
+        
+        // Check for PACK signature
+        if data[cursor..].starts_with(b"PACK") {
+            pack_start = cursor;
+            break;
+        }
+        
+        let len_str = std::str::from_utf8(&data[cursor..cursor+4])
+            .map_err(|_| "Invalid packet")?;
+        let len = u16::from_str_radix(len_str, 16)
+            .map_err(|_| "Invalid packet length")?;
             
-            if push.ref_updates.is_empty() && push.pack_data.is_empty() {
-                return create_status_response(true, vec![]);
-            }
-            
-            let ref_tuples = push.ref_updates
-                .into_iter()
-                .map(|u| (u.ref_name, u.old_oid, u.new_oid))
+        if len == 0 {
+            cursor += 4;
+            continue; // Flush packet
+        }
+        
+        if len < 4 || cursor + len as usize > data.len() {
+            return Err("Invalid packet".to_string());
+        }
+        
+        let content = &data[cursor+4..cursor+len as usize];
+        let line = std::str::from_utf8(content)
+            .map_err(|_| "Invalid UTF-8")?
+            .trim_end_matches('\n');
+        
+        // Parse ref update line: "old-oid new-oid ref-name"
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            ref_updates.push((
+                parts[2].to_string(), // ref name
+                parts[0].to_string(), // old oid
+                parts[1].to_string(), // new oid
+            ));
+            log(&format!("Parsed ref update: {} {} -> {}", parts[2], parts[0], parts[1]));
+        }
+        
+        cursor += len as usize;
+    }
+    
+    // Phase 2: Extract pack data
+    let pack_data = if pack_start > 0 {
+        data[pack_start..].to_vec()
+    } else {
+        Vec::new()
+    };
+    
+    log(&format!("Parsed {} ref updates, {} bytes pack data", ref_updates.len(), pack_data.len()));
+    
+    Ok(V1PushRequest {
+        ref_updates,
+        pack_data,
+    })
+}
+
+fn handle_v1_push(repo_state: &mut GitRepoState, push: V1PushRequest) -> HttpResponse {
+    log("Processing Protocol v1 push operation");
+    
+    if push.ref_updates.is_empty() && push.pack_data.is_empty() {
+        return create_status_response(true, vec![]);
+    }
+    
+    match repo_state.process_push_operation(&push.pack_data, push.ref_updates) {
+        Ok(statuses) => {
+            let ref_statuses: Vec<String> = statuses.iter()
+                .map(|status| {
+                    if status.starts_with("create ") {
+                        format!("ok {}", &status[7..])
+                    } else if status.starts_with("update ") {
+                        format!("ok {}", &status[7..])
+                    } else {
+                        status.clone()
+                    }
+                })
                 .collect();
-                
-            match repo_state.process_push_operation(&push.pack_data, ref_tuples) {
-                Ok(statuses) => {
-                    let ref_statuses: Vec<String> = statuses.iter()
-                        .map(|status| {
-                            if status.starts_with("create ") {
-                                format!("ok {}", &status[7..])
-                            } else if status.starts_with("update ") {
-                                format!("ok {}", &status[7..])
-                            } else {
-                                status.clone()
-                            }
-                        })
-                        .collect();
-                    create_status_response(true, ref_statuses)
-                }
-                Err(e) => create_status_response(false, vec![format!("unpack {}", e)])
-            }
+            create_status_response(true, ref_statuses)
+        }
+        Err(e) => create_status_response(false, vec![format!("unpack {}", e)])
+    }
+}
+
+fn handle_v2_push(repo_state: &mut GitRepoState, push: crate::protocol::protocol_v2_parser::PushRequest) -> HttpResponse {
+    log("Processing Protocol v2 push operation");
+    
+    if push.ref_updates.is_empty() && push.pack_data.is_empty() {
+        return create_status_response(true, vec![]);
+    }
+    
+    let ref_tuples = push.ref_updates
+        .into_iter()
+        .map(|u| (u.ref_name, u.old_oid, u.new_oid))
+        .collect();
+        
+    match repo_state.process_push_operation(&push.pack_data, ref_tuples) {
+        Ok(statuses) => {
+            let ref_statuses: Vec<String> = statuses.iter()
+                .map(|status| {
+                    if status.starts_with("create ") {
+                        format!("ok {}", &status[7..])
+                    } else if status.starts_with("update ") {
+                        format!("ok {}", &status[7..])
+                    } else {
+                        status.clone()
+                    }
+                })
+                .collect();
+            create_status_response(true, ref_statuses)
         }
         Err(e) => create_status_response(false, vec![format!("unpack {}", e)])
     }
 }
 
 // ============================================================================
-// COMMAND HANDLERS
+// PROTOCOL V2 COMMAND HANDLERS
 // ============================================================================
 
 #[derive(Debug)]
@@ -134,13 +280,12 @@ struct CommandRequest {
     args: Vec<String>,
 }
 
-fn handle_ls_refs(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResponse {
+fn handle_ls_refs(repo_state: &GitRepoState, _request: &CommandRequest) -> HttpResponse {
     log("Handling ls-refs command");
     let mut response = Vec::new();
     
     if repo_state.refs.is_empty() {
         log("Empty repository - showing unborn HEAD");
-        // Empty repo - show unborn HEAD
         response.extend(encode_pkt_line("unborn HEAD symref-target:refs/heads/main\n".as_bytes()));
     } else {
         let mut refs: Vec<_> = repo_state.refs.iter().collect();
@@ -156,17 +301,16 @@ fn handle_ls_refs(repo_state: &GitRepoState, request: &CommandRequest) -> HttpRe
     create_response(200, "application/x-git-upload-pack-result", &response)
 }
 
-fn handle_fetch(repo_state: &GitRepoState, _request: &CommandRequest) -> HttpResponse {
+fn handle_fetch(_repo_state: &GitRepoState, _request: &CommandRequest) -> HttpResponse {
     create_error_response("fetch not implemented yet")
 }
 
-fn handle_object_info(repo_state: &GitRepoState, _request: &CommandRequest) -> HttpResponse {
+fn handle_object_info(_repo_state: &GitRepoState, _request: &CommandRequest) -> HttpResponse {
     create_error_response("object-info not implemented yet")
 }
 
 fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
     log(&format!("Parsing command request, data length: {} bytes", data.len()));
-    log(&format!("Raw data hex: {}", hex::encode(data)));
     
     let mut lines = Vec::new();
     let mut pos = 0;
@@ -189,13 +333,9 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
         }
         
         let content = &data[pos+4..pos+len as usize];
-        log(&format!("Packet {}: len={}, content_bytes={:?}", lines.len(), len, content));
-        
         let line = std::str::from_utf8(content)
             .map_err(|_| "Invalid UTF-8")?
-            .trim_end_matches('\n'); // Only remove trailing newline as per protocol
-        
-        log(&format!("Parsed line: '{}'", line));
+            .trim_end_matches('\n');
         
         if !line.is_empty() {
             lines.push(line.to_string());
@@ -214,11 +354,11 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
         return Err(format!("Invalid command format: {}", first_line));
     };
     
-    log(&format!("Parsed command: '{}' from '{}' lines", command, lines.len()));
+    log(&format!("Parsed command: '{}'", command));
     
     Ok(CommandRequest {
         command,
-        capabilities: vec![],  // TODO: Parse capabilities properly
+        capabilities: vec![],
         args: lines[1..].to_vec(),
     })
 }
@@ -243,12 +383,9 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
 
 fn create_error_response(message: &str) -> HttpResponse {
     let mut data = Vec::new();
-    
-    // Proper error packet format
     let error_line = format!("ERR {}\n", message);
     data.extend(encode_pkt_line(error_line.as_bytes()));
     data.extend(encode_flush_pkt());
-    
     create_response(400, "application/x-git-upload-pack-result", &data)
 }
 
@@ -272,7 +409,7 @@ pub fn create_status_response(success: bool, ref_statuses: Vec<String>) -> HttpR
     create_response(200, "application/x-git-receive-pack-result", &data)
 }
 
-// FIXED: Packet utilities
+// Packet utilities
 fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
     let total_len = data.len() + 4;
     let mut result = format!("{:04x}", total_len).into_bytes();
@@ -280,4 +417,6 @@ fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
     result
 }
 
-fn encode_flush_pkt() -> Vec<u8> { b"0000".to_vec() }
+fn encode_flush_pkt() -> Vec<u8> { 
+    b"0000".to_vec() 
+}
