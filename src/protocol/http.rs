@@ -399,6 +399,9 @@ pub fn handle_receive_pack_request(
         }
     };
     
+    log(&format!("Received {} bytes of data", body.len()));
+    log(&format!("First 100 bytes: {:?}", String::from_utf8_lossy(&body[..std::cmp::min(100, body.len())])));
+    
     match parse_receive_pack_request(body) {
         Ok(receive_request) => process_receive_pack_request(repo_state, receive_request),
         Err(e) => {
@@ -783,15 +786,20 @@ fn generate_push_response(
         // Fallback to legacy protocol (for older Git clients)
         let unpack_line = format!("{}
 ", unpack_status);
+        log(&format!("Sending unpack status: {:?}", unpack_line));
         response_data.extend(encode_pkt_line(unpack_line.as_bytes()));
         
         // Send command results if report-status was requested
         if request.capabilities.contains(&"report-status".to_string()) {
+            log(&format!("Sending {} command results", command_results.len()));
             for result in command_results {
                 let result_line = format!("{}
 ", result);
+                log(&format!("Sending command result: {:?}", result_line));
                 response_data.extend(encode_pkt_line(result_line.as_bytes()));
             }
+        } else {
+            log("Not sending command results (report-status not requested)");
         }
         
         // End with flush packet
