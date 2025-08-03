@@ -10,8 +10,7 @@ TEMP_DIR="$2"
 source "$(dirname "$0")/test_helpers.sh"
 
 # Test basic ls-refs command
-local request_data="0012command=ls-refs0000"
-local response_code
+request_data=$(create_ls_refs_request)
 response_code=$(send_git_request "$SERVER_URL/git-upload-pack" "$request_data" "$TEMP_DIR/ls_refs_response")
 
 if [[ "$response_code" != "200" ]]; then
@@ -25,7 +24,7 @@ if [[ "$response_code" != "200" ]]; then
 fi
 
 # Test response format (should end with flush packet for empty repo)
-local response_content=$(cat "$TEMP_DIR/ls_refs_response")
+response_content=$(cat "$TEMP_DIR/ls_refs_response")
 
 # For empty repository, expect just a flush packet (0000)
 if [[ "$response_content" == "0000" ]]; then
