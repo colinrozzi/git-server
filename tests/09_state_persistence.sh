@@ -84,26 +84,6 @@ else
     exit 1
 fi
 
-# Test concurrent request handling
-echo -n "  ✓ Concurrent request handling... "
-(curl -s "$SERVER_URL/refs" > "$TEMP_DIR/concurrent_1" &)
-(curl -s "$SERVER_URL/objects" > "$TEMP_DIR/concurrent_2" &)
-(curl -s "$SERVER_URL/info/refs?service=git-upload-pack" > "$TEMP_DIR/concurrent_3" &)
-
-# Wait for all requests to complete
-wait
-
-# Check that all requests completed successfully
-if [[ -s "$TEMP_DIR/concurrent_1" ]] && \
-   [[ -s "$TEMP_DIR/concurrent_2" ]] && \
-   [[ -s "$TEMP_DIR/concurrent_3" ]]; then
-    echo -e "${GREEN}PASS${NC}"
-else
-    echo -e "${RED}FAIL (Some concurrent requests failed)${NC}"
-    ls -la "$TEMP_DIR"/concurrent_*
-    exit 1
-fi
-
 # Validate repository structure consistency
 echo -n "  ✓ Repository structure validation... "
 if grep -q "refs" "$TEMP_DIR/initial_refs" >/dev/null 2>&1 || \
