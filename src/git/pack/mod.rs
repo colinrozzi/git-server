@@ -94,6 +94,8 @@ impl<'a> PackParser<'a> {
         // Skip checksum for now
         let _ = self.verify_checksum();
 
+        log(&format!("Parsed {} objects successfully", objects.len()));
+
         Ok(objects)
     }
 
