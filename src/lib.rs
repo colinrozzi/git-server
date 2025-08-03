@@ -23,12 +23,12 @@ struct Component;
 
 impl Guest for Component {
     fn init(state: Option<Vec<u8>>, params: (String,)) -> Result<(Option<Vec<u8>>,), String> {
-        log("Initializing git-server actor");
+        log("🚀 Initializing git-server actor with Protocol v2!");
         let (self_id,) = params;
         log(&format!("Git server actor ID: {}", &self_id));
 
         // Parse existing state or create new
-        let mut repo_state = match state {
+        let repo_state = match state {
             Some(bytes) => serde_json::from_slice::<GitRepoState>(&bytes).unwrap_or_else(|_| {
                 log("Failed to parse existing state, creating new");
                 GitRepoState::default()
@@ -39,20 +39,17 @@ impl Guest for Component {
             }
         };
 
-        // Start with empty repository - objects will come from git push
-        log("Starting with COMPLETELY empty repository for push testing");
-
-        // TEMPORARILY: Skip adding test objects to test push-first approach
-        // repo_state.ensure_minimal_objects_for_smart_http();
+        // Start with empty repository - modern push-first workflow
+        log("🏗️  Starting with empty repository for modern push-first workflow");
 
         log(&format!(
-            "Git repository '{}' initialized with {} refs and {} objects",
+            "📦 Git repository '{}' initialized with {} refs and {} objects",
             repo_state.repo_name,
             repo_state.refs.len(),
             repo_state.objects.len()
         ));
 
-        // Set up HTTP server for git protocol
+        // Set up HTTP server for Git Protocol v2
         let config = ServerConfig {
             port: Some(8080),
             host: Some("0.0.0.0".to_string()),
@@ -63,131 +60,87 @@ impl Guest for Component {
         let server_id = http_framework::create_server(&config)
             .map_err(|e| format!("Failed to create HTTP server: {}", e))?;
 
-        // Register a git handler with explicit error handling
+        // Register git handler
         let git_handler = match http_framework::register_handler("git") {
             Ok(handler_id) => {
-                log(&format!(
-                    "Successfully registered git handler with ID: {}",
-                    handler_id
-                ));
+                log(&format!("✅ Successfully registered git handler with ID: {}", handler_id));
                 handler_id
             }
             Err(e) => {
-                log(&format!("Failed to register git handler: {}", e));
+                log(&format!("❌ Failed to register git handler: {}", e));
                 return Err(format!("Failed to register git handler: {}", e));
             }
         };
 
-        log(&format!("Using git handler ID: {}", git_handler));
-
-        // Add a small delay to ensure handler is fully registered
-        // (This might help with timing issues)
-
-        // Add git protocol routes one by one with proper error handling
+        // Add Protocol v2 routes
         match http_framework::add_route(server_id, "/info/refs", "GET", git_handler) {
-            Ok(_) => log("Added GET /info/refs route"),
+            Ok(_) => log("✅ Added GET /info/refs route (Protocol v2)"),
             Err(e) => {
-                log(&format!("Failed to add /info/refs route: {}", e));
+                log(&format!("❌ Failed to add /info/refs route: {}", e));
                 return Err(format!("Failed to add /info/refs route: {}", e));
             }
         }
 
         match http_framework::add_route(server_id, "/git-upload-pack", "POST", git_handler) {
-            Ok(_) => log("Added POST /git-upload-pack route"),
+            Ok(_) => log("✅ Added POST /git-upload-pack route (Protocol v2)"),
             Err(e) => {
-                log(&format!("Failed to add /git-upload-pack route: {}", e));
+                log(&format!("❌ Failed to add /git-upload-pack route: {}", e));
                 return Err(format!("Failed to add /git-upload-pack route: {}", e));
             }
         }
 
         match http_framework::add_route(server_id, "/git-receive-pack", "POST", git_handler) {
-            Ok(_) => log("Added POST /git-receive-pack route"),
+            Ok(_) => log("✅ Added POST /git-receive-pack route (Protocol v2)"),
             Err(e) => {
-                log(&format!("Failed to add /git-receive-pack route: {}", e));
+                log(&format!("❌ Failed to add /git-receive-pack route: {}", e));
                 return Err(format!("Failed to add /git-receive-pack route: {}", e));
             }
         }
 
+        // Add modern debug routes
         match http_framework::add_route(server_id, "/", "GET", git_handler) {
-            Ok(_) => log("Added GET / route"),
+            Ok(_) => log("✅ Added GET / debug route"),
             Err(e) => {
-                log(&format!("Failed to add / route: {}", e));
+                log(&format!("❌ Failed to add / route: {}", e));
                 return Err(format!("Failed to add / route: {}", e));
             }
         }
 
-        // /refs/* route is now added above with wildcard pattern
-
-        match http_framework::add_route(server_id, "/objects/{*path}", "GET", git_handler) {
-            Ok(_) => log("Added GET /objects/* route"),
+        match http_framework::add_route(server_id, "/refs", "GET", git_handler) {
+            Ok(_) => log("✅ Added GET /refs debug route"),
             Err(e) => {
-                log(&format!("Failed to add /objects/* route: {}", e));
-                return Err(format!("Failed to add /objects/* route: {}", e));
+                log(&format!("❌ Failed to add /refs route: {}", e));
+                return Err(format!("Failed to add /refs route: {}", e));
             }
         }
 
-        match http_framework::add_route(server_id, "/refs/{*path}", "GET", git_handler) {
-            Ok(_) => log("Added GET /refs/* route"),
+        match http_framework::add_route(server_id, "/objects", "GET", git_handler) {
+            Ok(_) => log("✅ Added GET /objects debug route"),
             Err(e) => {
-                log(&format!("Failed to add /refs/* route: {}", e));
-                return Err(format!("Failed to add /refs/* route: {}", e));
-            }
-        }
-
-        match http_framework::add_route(server_id, "/HEAD", "GET", git_handler) {
-            Ok(_) => log("Added GET /HEAD route"),
-            Err(e) => {
-                log(&format!("Failed to add /HEAD route: {}", e));
-                return Err(format!("Failed to add /HEAD route: {}", e));
-            }
-        }
-
-        // Add PUT routes for dumb HTTP push support
-        match http_framework::add_route(server_id, "/objects/{*path}", "PUT", git_handler) {
-            Ok(_) => log("Added PUT /objects/* route"),
-            Err(e) => {
-                log(&format!("Failed to add PUT /objects/* route: {}", e));
-                return Err(format!("Failed to add PUT /objects/* route: {}", e));
-            }
-        }
-
-        match http_framework::add_route(server_id, "/refs/{*path}", "PUT", git_handler) {
-            Ok(_) => log("Added PUT /refs/* route"),
-            Err(e) => {
-                log(&format!("Failed to add PUT /refs/* route: {}", e));
-                return Err(format!("Failed to add PUT /refs/* route: {}", e));
-            }
-        }
-
-        // Add LOCK and DELETE routes for git-http-push support (now supported!)
-        match http_framework::add_route(server_id, "/refs/{*path}", "LOCK", git_handler) {
-            Ok(_) => log("Added LOCK /refs/* route"),
-            Err(e) => {
-                log(&format!("Failed to add LOCK /refs/* route: {}", e));
-                return Err(format!("Failed to add LOCK /refs/* route: {}", e));
-            }
-        }
-
-        match http_framework::add_route(server_id, "/refs/{*path}", "DELETE", git_handler) {
-            Ok(_) => log("Added DELETE /refs/* route"),
-            Err(e) => {
-                log(&format!("Failed to add DELETE /refs/* route: {}", e));
-                return Err(format!("Failed to add DELETE /refs/* route: {}", e));
+                log(&format!("❌ Failed to add /objects route: {}", e));
+                return Err(format!("Failed to add /objects route: {}", e));
             }
         }
 
         // Start the server
-        let actual_port = http_framework::start_server(server_id)
-            .map_err(|e| format!("Failed to start HTTP server: {}", e))?;
+        match http_framework::start_server(server_id) {
+            Ok(_) => log("🌐 HTTP server started successfully on port 8080"),
+            Err(e) => {
+                log(&format!("❌ Failed to start HTTP server: {}", e));
+                return Err(format!("Failed to start HTTP server: {}", e));
+            }
+        }
 
-        log(&format!("Git server started on port {}", actual_port));
+        log("🎉 Git Protocol v2 server initialization completed!");
 
-        // Serialize state back
-        let new_state = serde_json::to_vec(&repo_state)
+        // Serialize and return the repository state
+        let serialized_state = serde_json::to_vec(&repo_state)
             .map_err(|e| format!("Failed to serialize state: {}", e))?;
 
-        Ok((Some(new_state),))
+        Ok((Some(serialized_state),))
     }
+
+
 }
 
 impl HttpHandlers for Component {
@@ -195,155 +148,158 @@ impl HttpHandlers for Component {
         state: Option<Vec<u8>>,
         params: (HandlerId, HttpRequest),
     ) -> Result<(Option<Vec<u8>>, (HttpResponse,)), String> {
-        let (_handler_id, request) = params;
-
-        log(&format!("Smart HTTP {} {}", request.method, request.uri));
+        let (handler_id, request) = params;
+        log(&format!(
+            "⚡ Protocol v2: {} {} (handler: {})",
+            request.method, request.uri, handler_id
+        ));
 
         // Parse current state
-        let mut repo_state: GitRepoState = match state {
-            Some(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("Failed to parse state: {}", e))?,
+        let mut repo_state = match state {
+            Some(bytes) => serde_json::from_slice::<GitRepoState>(&bytes).unwrap_or_default(),
             None => GitRepoState::default(),
         };
 
-        // Parse URI to separate path from query parameters
-        let (path, query) = if let Some(pos) = request.uri.find('?') {
-            (&request.uri[..pos], &request.uri[pos + 1..])
+        // Route based on path - Protocol v2 only!
+        // Parse the URI to get path and query
+        let uri_parts: Vec<&str> = request.uri.splitn(2, '?').collect();
+        let path = uri_parts[0];
+        let query = if uri_parts.len() > 1 {
+            Some(uri_parts[1].to_string())
         } else {
-            (request.uri.as_str(), "")
+            None
         };
-
-        // Smart HTTP Only Routes
-        let response = match (request.method.as_str(), path) {
-            // Smart HTTP ref advertisement - REQUIRED
-            ("GET", "/info/refs") => {
-                match extract_service_from_query(query) {
-                    Some(service) => handle_smart_info_refs(&repo_state, service),
-                    None => create_response(
-                        400, 
-                        "text/plain", 
-                        b"Smart HTTP requires ?service=git-upload-pack or ?service=git-receive-pack"
-                    ),
+        
+        let response = match path {
+            "/info/refs" => {
+                log("🔍 Processing capability advertisement (Protocol v2)");
+                if let Some(service) = extract_service_from_query(&query) {
+                    handle_smart_info_refs(&repo_state, &service)
+                } else {
+                    create_response(400, "text/plain", b"Missing service parameter")
                 }
             }
-
-            // Smart HTTP fetch/clone
-            ("POST", "/git-upload-pack") => {
-                handle_upload_pack_request(&repo_state, &request)
+            "/git-upload-pack" => {
+                log("📦 Processing upload-pack command (Protocol v2)");
+                handle_upload_pack_request(&mut repo_state, &request)
             }
-
-            // Smart HTTP push
-            ("POST", "/git-receive-pack") => {
+            "/git-receive-pack" => {
+                log("📤 Processing receive-pack (Protocol v2 style)");
                 handle_receive_pack_request(&mut repo_state, &request)
             }
-
-            // Debug/info endpoints for development
-            ("GET", "/") => handle_repo_info(&repo_state),
-            ("GET", "/debug/refs") => handle_list_refs(&repo_state),
-            ("GET", "/debug/objects") => handle_list_objects(&repo_state),
-
-            // 404 for everything else
+            "/" => {
+                // Modern debug endpoint
+                let info = format!(
+                    "🚀 Git Server Actor - Protocol v2 ONLY\n\n\
+                     🏗️  Modern Git Wire Protocol Implementation\n\
+                     Repository: {}\n\
+                     Refs: {}\n\
+                     Objects: {}\n\
+                     HEAD: {}\n\n\
+                     🌟 Protocol v2 Features:\n\
+                     ✅ Capability advertisement\n\
+                     ✅ ls-refs command\n\
+                     ✅ fetch command\n\
+                     ✅ object-info command\n\
+                     ✅ Structured responses\n\
+                     ✅ Sideband multiplexing\n\
+                     ✅ Modern packet-line protocol\n\n\
+                     🔗 Endpoints:\n\
+                     GET  /info/refs?service=git-upload-pack\n\
+                     POST /git-upload-pack\n\
+                     POST /git-receive-pack\n\
+                     GET  /refs (debug)\n\
+                     GET  /objects (debug)\n\n\
+                     💡 Usage:\n\
+                     git clone http://localhost:8080\n\
+                     git -c protocol.version=2 clone http://localhost:8080\n",
+                    repo_state.repo_name,
+                    repo_state.refs.len(),
+                    repo_state.objects.len(),
+                    repo_state.head
+                );
+                create_response(200, "text/plain", info.as_bytes())
+            }
+            "/refs" => {
+                // Modern refs debug endpoint
+                let mut refs_info = String::new();
+                refs_info.push_str("🔗 Git References (Protocol v2)\n\n");
+                
+                if repo_state.refs.is_empty() {
+                    refs_info.push_str("📭 No refs found (empty repository)\n\n");
+                    refs_info.push_str("💡 To add refs:\n");
+                    refs_info.push_str("   git push http://localhost:8080 main\n");
+                } else {
+                    for (ref_name, hash) in &repo_state.refs {
+                        refs_info.push_str(&format!("📎 {} -> {}\n", ref_name, hash));
+                    }
+                }
+                
+                create_response(200, "text/plain", refs_info.as_bytes())
+            }
+            "/objects" => {
+                // Modern objects debug endpoint
+                let mut objects_info = String::new();
+                objects_info.push_str("📦 Git Objects (Protocol v2)\n\n");
+                
+                if repo_state.objects.is_empty() {
+                    objects_info.push_str("📭 No objects found (empty repository)\n\n");
+                    objects_info.push_str("💡 Objects will be created when you push commits\n");
+                } else {
+                    for (hash, obj) in &repo_state.objects {
+                        let (obj_type, emoji) = match obj {
+                            GitObject::Blob { .. } => ("blob", "📄"),
+                            GitObject::Tree { .. } => ("tree", "📁"),
+                            GitObject::Commit { .. } => ("commit", "💾"),
+                            GitObject::Tag { .. } => ("tag", "🏷️"),
+                        };
+                        objects_info.push_str(&format!("{} {} ({})\n", emoji, hash, obj_type));
+                    }
+                }
+                
+                create_response(200, "text/plain", objects_info.as_bytes())
+            }
             _ => {
-                log(&format!(
-                    "Unknown route: {} {} - Smart HTTP only supports /info/refs, /git-upload-pack, /git-receive-pack",
-                    request.method, request.uri
-                ));
-                create_response(
-                    404, 
-                    "text/plain", 
-                    b"Not Found. Smart HTTP endpoints: GET /info/refs?service=..., POST /git-upload-pack, POST /git-receive-pack"
-                )
+                log(&format!("❓ Unknown path: {}", path));
+                create_response(404, "text/plain", "Not Found\n\nProtocol v2 endpoints:\n- GET /info/refs\n- POST /git-upload-pack\n- POST /git-receive-pack".as_bytes())
             }
         };
 
         // Serialize updated state
-        let new_state = serde_json::to_vec(&repo_state)
-            .map_err(|e| format!("Failed to serialize updated state: {}", e))?;
+        let serialized_state = serde_json::to_vec(&repo_state)
+            .map_err(|e| format!("Failed to serialize state: {}", e))?;
 
-        Ok((Some(new_state), (response,)))
+        Ok((Some(serialized_state), (response,)))
     }
 
     fn handle_middleware(
         state: Option<Vec<u8>>,
-        params: (HandlerId, HttpRequest),
+        _params: (HandlerId, HttpRequest),
     ) -> Result<(Option<Vec<u8>>, (MiddlewareResult,)), String> {
-        let (_handler_id, request) = params;
-        // For now, just pass through all requests
-        let middleware_result = MiddlewareResult {
-            proceed: true,
-            request,
-        };
-        Ok((state, (middleware_result,)))
+        Ok((state, (MiddlewareResult { proceed: true, request: _params.1 },)))
     }
 
     fn handle_websocket_connect(
         state: Option<Vec<u8>>,
-        params: (HandlerId, u64, String, Option<String>),
+        _params: (HandlerId, u64, String, Option<String>),
     ) -> Result<(Option<Vec<u8>>,), String> {
-        // Git doesn't use WebSockets, so just accept but do nothing
         Ok((state,))
-    }
-
-    fn handle_websocket_message(
-        state: Option<Vec<u8>>,
-        params: (HandlerId, u64, WebsocketMessage),
-    ) -> Result<(Option<Vec<u8>>, (Vec<WebsocketMessage>,)), String> {
-        // Git doesn't use WebSockets, return empty response
-        Ok((state, (vec![],)))
     }
 
     fn handle_websocket_disconnect(
         state: Option<Vec<u8>>,
-        params: (HandlerId, u64),
+        _params: (HandlerId, u64),
     ) -> Result<(Option<Vec<u8>>,), String> {
-        // Git doesn't use WebSockets, just acknowledge
         Ok((state,))
     }
-}
 
-// Debug/Development Endpoints
-
-fn handle_repo_info(repo_state: &GitRepoState) -> HttpResponse {
-    let info = format!(
-        "Git Repository: {}\nHEAD: {}\nRefs: {}\nObjects: {}\n",
-        repo_state.repo_name,
-        repo_state.head,
-        repo_state.refs.len(),
-        repo_state.objects.len()
-    );
-
-    create_response(200, "text/plain", info.as_bytes())
-}
-
-fn handle_list_refs(repo_state: &GitRepoState) -> HttpResponse {
-    let mut refs_list = String::new();
-    refs_list.push_str(&format!("HEAD: {}\n", repo_state.head));
-
-    for (ref_name, commit_hash) in &repo_state.refs {
-        refs_list.push_str(&format!("{}: {}\n", ref_name, commit_hash));
+    fn handle_websocket_message(
+        _state: Option<Vec<u8>>,
+        _params: (HandlerId, u64, WebsocketMessage),
+    ) -> Result<(Option<Vec<u8>>, (Vec<WebsocketMessage>,)), String> {
+        // WebSocket not used for Git protocol
+        Err("WebSocket not supported for Git Protocol v2".to_string())
     }
-
-    create_response(200, "text/plain", refs_list.as_bytes())
-}
-
-fn handle_list_objects(repo_state: &GitRepoState) -> HttpResponse {
-    let mut objects_list = String::new();
-
-    for (hash, obj) in &repo_state.objects {
-        let obj_type = match obj {
-            GitObject::Blob { .. } => "blob",
-            GitObject::Tree { .. } => "tree",
-            GitObject::Commit { .. } => "commit",
-            GitObject::Tag { .. } => "tag",
-        };
-        objects_list.push_str(&format!("{}: {}\n", hash, obj_type));
-    }
-
-    if objects_list.is_empty() {
-        objects_list.push_str("No objects in repository\n");
-    }
-
-    create_response(200, "text/plain", objects_list.as_bytes())
 }
 
 bindings::export!(Component with_types_in bindings);
