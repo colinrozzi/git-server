@@ -151,7 +151,7 @@ impl HttpHandlers for Component {
     ) -> Result<(Option<Vec<u8>>, (HttpResponse,)), String> {
         let (handler_id, request) = params;
         log(&format!(
-            "⚡ Protocol v2: {} {} (handler: {})",
+            "request received: {} {} (handler: {})",
             request.method, request.uri, handler_id
         ));
 
@@ -269,6 +269,13 @@ impl HttpHandlers for Component {
                 create_response(404, "text/plain", "Not Found\n\nProtocol v2 endpoints:\n- GET /info/refs\n- POST /git-upload-pack\n- POST /git-receive-pack".as_bytes())
             }
         };
+
+        log(&format!("Response: {}", response.status));
+
+        match response.body {
+            Some(ref body) => log(&format!("Response body: {}", String::from_utf8_lossy(body))),
+            None => log("No response body"),
+        }
 
         // Serialize updated state
         let serialized_state = serde_json::to_vec(&repo_state)
