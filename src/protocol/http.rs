@@ -750,20 +750,49 @@ fn generate_push_response(
 ) -> HttpResponse {
     let mut response_data = Vec::new();
     
-    // Send unpack status
-    let unpack_line = format!("{}\n", unpack_status);
-    response_data.extend(encode_pkt_line(unpack_line.as_bytes()));
+    // Check if client supports sideband
+    let use_sideband = request.capabilities.contains(&"side-band-64k".to_string()) || 
+                      request.capabilities.contains(&"side-band".to_string());
     
-    // Send command results if report-status was requested
-    if request.capabilities.contains(&"report-status".to_string()) {
-        for result in command_results {
-            let result_line = format!("{}\n", result);
-            response_data.extend(encode_pkt_line(result_line.as_bytes()));
+    if use_sideband {
+        log("Using sideband protocol for receive-pack response");
+        
+        // Send unpack status wrapped in sideband (band 1)
+        let unpack_line = format!("{}
+", unpack_status);
+        response_data.extend(encode_sideband_message(1, unpack_line.as_bytes()));
+        
+        // Send command results if report-status was requested
+        if request.capabilities.contains(&"report-status".to_string()) {
+            for result in command_results {
+                let result_line = format!("{}
+", result);
+                response_data.extend(encode_sideband_message(1, result_line.as_bytes()));
+            }
         }
+        
+        // End with flush packet
+        response_data.extend(encode_flush_pkt());
+    } else {
+        log("Using legacy protocol for receive-pack response (no sideband)");
+        
+        // Fallback to legacy protocol (for older Git clients)
+        let unpack_line = format!("{}
+", unpack_status);
+        response_data.extend(encode_pkt_line(unpack_line.as_bytes()));
+        
+        // Send command results if report-status was requested
+        if request.capabilities.contains(&"report-status".to_string()) {
+            for result in command_results {
+                let result_line = format!("{}
+", result);
+                response_data.extend(encode_pkt_line(result_line.as_bytes()));
+            }
+        }
+        
+        // End with flush packet
+        response_data.extend(encode_flush_pkt());
     }
-    
-    // End with flush packet
-    response_data.extend(encode_flush_pkt());
     
     create_response(
         200,
@@ -771,7 +800,6 @@ fn generate_push_response(
         &response_data,
     )
 }
-
 /// Encode pack data using side-band protocol
 fn encode_sideband_pack_data(pack_data: &[u8]) -> Vec<u8> {
     let mut result = Vec::new();
@@ -794,4 +822,12 @@ fn encode_sideband_pack_data(pack_data: &[u8]) -> Vec<u8> {
     // End with flush packet
     result.extend(encode_flush_pkt());
     result
+}
+
+/// Encode a single message using sideband protocol
+fn encode_sideband_message(band: u8, message: &[u8]) -> Vec<u8> {
+    let mut packet_data = Vec::new();
+    packet_data.push(band); // Band number (1=data, 2=progress, 3=error)
+    packet_data.extend(message);
+    encode_pkt_line(&packet_data)
 }
