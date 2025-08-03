@@ -148,7 +148,7 @@ pub fn handle_receive_pack_request(
     repo_state: &mut GitRepoState,
     request: &HttpRequest,
 ) -> HttpResponse {
-    log("processing receive-pack request");
+    log("handle_receive_pack");
 
     let body = match &request.body {
         Some(b) => b,
