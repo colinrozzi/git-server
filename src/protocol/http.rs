@@ -751,8 +751,10 @@ fn generate_push_response(
     let mut response_data = Vec::new();
     
     // Check if client supports sideband
-    let use_sideband = request.capabilities.contains(&"side-band-64k".to_string()) || 
-                      request.capabilities.contains(&"side-band".to_string());
+    // TEMPORARILY DISABLE SIDEBAND TO TEST
+    let use_sideband = false;
+    // let use_sideband = request.capabilities.contains(&"side-band-64k".to_string()) || 
+    //                   request.capabilities.contains(&"side-band".to_string());
     
     if use_sideband {
         log("Using sideband protocol for receive-pack response");
@@ -760,7 +762,9 @@ fn generate_push_response(
         // Send unpack status wrapped in sideband (band 1)
         let unpack_line = format!("{}
 ", unpack_status);
-        response_data.extend(encode_sideband_message(1, unpack_line.as_bytes()));
+        let sideband_packet = encode_sideband_message(1, unpack_line.as_bytes());
+        log(&format!("Sending sideband packet: {:?}", String::from_utf8_lossy(&sideband_packet)));
+        response_data.extend(sideband_packet);
         
         // Send command results if report-status was requested
         if request.capabilities.contains(&"report-status".to_string()) {
