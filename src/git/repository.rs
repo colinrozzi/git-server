@@ -524,6 +524,11 @@ impl GitRepoState {
             match &obj {
                 GitObject::Commit { tree, parents, author, committer, message } => {
                     log(&format!("COMMIT DEBUG - tree: {}, parents: {:?}, author: {}, committer: {}, message: {}", tree, parents, author, committer, message));
+                    
+                    // DEBUG: Log the exact serialized content
+                    let serialized = crate::git::repository::serialize_commit_object(tree, parents, author, committer, message);
+                    log(&format!("COMMIT SERIALIZED: {:?}", std::str::from_utf8(&serialized).unwrap_or("<invalid utf8>")));
+                    log(&format!("COMMIT SERIALIZED BYTES: {:?}", serialized));
                 }
                 _ => {}
             }
