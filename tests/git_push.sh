@@ -49,8 +49,8 @@ fi
 git remote add origin "$SERVER_URL"
 
 # Capture git push output
-local push_output="$TEMP_DIR/push_output"
-local push_error="$TEMP_DIR/push_error"
+push_output="$TEMP_DIR/push_output"
+push_error="$TEMP_DIR/push_error"
 
 if git push origin main >"$push_output" 2>"$push_error"; then
     # Success! Check that the push actually worked by verifying server state
@@ -58,7 +58,7 @@ if git push origin main >"$push_output" 2>"$push_error"; then
     exit 0
 else
     # Parse the error to understand what went wrong
-    local error_msg=$(cat "$push_error")
+    error_msg=$(cat "$push_error" 2>/dev/null || echo "No error output")
     
     # Common failure patterns
     if [[ "$error_msg" =~ "invalid server response" ]]; then
