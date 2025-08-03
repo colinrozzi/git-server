@@ -1,178 +1,62 @@
-# Git Server Test Suite 🧪
+# Git Server Test Suite
 
-This directory contains comprehensive tests for the WebAssembly Git server implementation.
+A focused, minimal test suite following the **Signal, Not Noise** principle.
 
-## 🚀 Quick Start
-
-```bash
-# Make scripts executable
-chmod +x *.sh
-
-# Run all tests
-./run_tests.sh
-
-# Run a specific test
-./run_tests.sh 01_health_check
-
-# List available tests
-./run_tests.sh --list
-
-# Get help
-./run_tests.sh --help
-```
-
-## 📋 Test Categories
-
-### **Core Protocol Tests**
-1. **01_health_check** - Basic server health and debug endpoints
-2. **02_capability_advertisement** - Git Protocol v2 capability advertisement
-3. **03_ls_refs** - ls-refs command testing with various options
-4. **04_fetch_command** - fetch command testing (empty repo scenarios)
-5. **05_object_info** - object-info command testing
-
-### **Robustness Tests**
-6. **06_error_handling** - Error conditions and malformed requests
-7. **07_git_client_compatibility** - Real Git client integration
-8. **08_packet_line_validation** - Git packet-line protocol validation
-9. **09_state_persistence** - Repository state consistency and persistence
-
-## 🔧 Configuration
-
-Set environment variables to customize test behavior:
+## Quick Start
 
 ```bash
-# Change server URL (default: http://localhost:8080)
-export GIT_SERVER_URL="http://localhost:3000"
-
-# Run tests
+# Run all essential tests
 ./run_tests.sh
+
+# Run specific test
+./run_tests.sh ls_refs
+./run_tests.sh git_push
 ```
 
-## 📊 Test Output
+## Test Philosophy
 
-Tests provide:
-- ✅ **Pass/Fail status** for each test case
-- 🔍 **Detailed error messages** when tests fail
-- 📋 **Sample responses** and protocol traces
-- 📈 **Summary statistics** at the end
+- **Success = Silent** - Just `✓ test_name`
+- **Failure = Full Context** - Everything needed to debug
+- **Essential tests only** - Focus on core functionality
 
-## 🧩 Individual Test Details
+## Current Tests
 
-### **Health Check (01)**
-- Tests basic server endpoints (`/`, `/refs`, `/objects`)
-- Validates JSON response format
-- Ensures server is responsive
+- **ls_refs** - Protocol v2 ls-refs command functionality
+- **git_push** - Real git client push to empty repository
 
-### **Capability Advertisement (02)**
-- Tests Git smart HTTP info/refs endpoint
-- Validates Protocol v2 advertisement
-- Checks for required capabilities (ls-refs, fetch, object-info)
-- Validates packet-line format
+## Output Examples
 
-### **ls-refs Command (03)**
-- Tests basic reference listing
-- Tests with symrefs, peel, unborn options
-- Tests ref-prefix filtering
-- Validates response format for empty repositories
+**Clean success:**
+```
+Running essential git-server tests...
 
-### **fetch Command (04)**
-- Tests basic fetch operations
-- Tests with various capabilities (no-progress, thin-pack, ofs-delta, sideband-all)
-- Handles empty repository scenarios
-- Tests invalid want object handling
+✓ ls_refs
+✓ git_push
 
-### **object-info Command (05)**
-- Tests object metadata queries
-- Tests with size, content attributes
-- Tests content-limit and content-encoding options
+Summary: 2/2 tests passed
+```
 
-### **Error Handling (06)**
-- Tests invalid command rejection
-- Tests malformed packet-line handling
-- Tests unsupported services
-- Tests invalid HTTP methods
-- Tests large request body handling
+**Helpful failure:**
+```
+✗ ls_refs_response_format
+  Expected: Response ending with flush packet (0000)
+  Actual: 001b -> "invalid packet format"
+  Parsed packet-line data:
+    000e -> "001b001700"
+    001b -> [packet too short]
+  Issue: ls-refs response not properly terminated
+  Check: handle_ls_refs_command() in protocol/http.rs
+```
 
-### **Git Client Compatibility (07)**
-- Tests with real `git` commands
-- Tests `git ls-remote` with Protocol v2
-- Tests `git clone` (expects appropriate handling of empty repo)
-- Tests custom user agents and HTTP configurations
-- Captures protocol traces for debugging
+## Adding Tests
 
-### **Packet-line Validation (08)**
-- Validates Git packet-line protocol compliance
-- Tests packet-line header format (4-digit hex)
-- Tests flush packet handling
-- Parses and validates multiple packet-lines
-- Tests UTF-8 content encoding
+Follow the pattern in `ls_refs.sh` and `git_push.sh`:
 
-### **State Persistence (09)**
-- Tests repository state consistency
-- Tests concurrent request handling
-- Tests state stability after protocol operations
-- Validates Theater actor memory consistency
+1. Use helper functions from `test_helpers.sh`
+2. Exit 0 on success (no output needed)
+3. Use `test_fail()` with full context on failure
+4. Focus on essential functionality only
 
-## 🐛 Debugging Failed Tests
+## Old Tests
 
-When tests fail:
-
-1. **Check the server logs** - Look at Theater/git-server output
-2. **Check temp files** - Test responses are saved in `/tmp/git-server-tests/`
-3. **Run individual tests** - Use `./run_tests.sh <test_name>` for focused debugging
-4. **Check Protocol traces** - Git client tests include `GIT_TRACE_PACKET` output
-
-## 📝 Common Test Scenarios
-
-### **Empty Repository Testing**
-Most tests are designed to work with empty repositories:
-- ls-refs should return empty ref list with flush packet
-- fetch should handle "done" without objects gracefully
-- Git clients may show warnings but shouldn't crash
-
-### **Protocol v2 Compliance**
-Tests validate:
-- Proper capability advertisement format
-- Packet-line protocol compliance
-- Command routing and response structure
-- Error handling for unsupported features
-
-### **Concurrency and State**
-Tests verify:
-- Multiple simultaneous requests work correctly
-- Repository state remains consistent
-- Actor memory management works properly
-
-## 🚦 Exit Codes
-
-- **0** - All tests passed
-- **1** - Some tests failed (check individual test output)
-
-## 📚 Adding New Tests
-
-To add a new test:
-
-1. Create `tests/XX_test_name.sh`
-2. Follow the existing pattern:
-   ```bash
-   #!/bin/bash
-   SERVER_URL="$1"
-   TEMP_DIR="$2"
-   # Test implementation
-   ```
-3. Add the test to the `run_all_tests()` function in `run_tests.sh`
-4. Make the script executable: `chmod +x XX_test_name.sh`
-
-## 🎯 Best Practices
-
-- **Test empty repositories first** - Your server starts empty
-- **Add test data gradually** - Build up repository state for advanced tests  
-- **Test error conditions** - Ensure graceful failure handling
-- **Validate protocol compliance** - Git is strict about packet-line format
-- **Test real Git clients** - Ultimate compatibility test
-
----
-
-**Happy Testing!** 🎉
-
-These tests help ensure your WebAssembly Git server correctly implements Git Protocol v2 and integrates well with the Theater actor system.
+Previous verbose tests moved to `old_tests/` directory for reference.

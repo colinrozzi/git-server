@@ -1,6 +1,0 @@
-🔗 Git References (Protocol v2)
-
-📭 No refs found (empty repository)
-
-💡 To add refs:
-   git push http://localhost:8080 main

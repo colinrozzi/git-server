@@ -1,5 +1,0 @@
-📦 Git Objects (Protocol v2)
-
-📭 No objects found (empty repository)
-
-💡 Objects will be created when you push commits
