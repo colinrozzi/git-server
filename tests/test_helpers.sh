@@ -197,10 +197,25 @@ send_git_request() {
     local data="$2"
     local output_file="$3"
     
-    echo -n "$data" | curl -s -w "%{http_code}" \
+    printf "%s" "$data" | curl -s -w "%{http_code}" \
         -X POST \
         -H "Content-Type: application/x-git-upload-pack-request" \
         --data-binary @- \
         -o "$output_file" \
         "$url"
+}
+
+# Format a Git packet-line (length + content)
+format_packet() {
+    local content="$1"
+    local length=$((${#content} + 4))
+    printf "%04x%s" "$length" "$content"
+}
+
+# Create ls-refs request
+create_ls_refs_request() {
+    # command=ls-refs + newline
+    local cmd_packet=$(format_packet "command=ls-refs"$'\n')
+    local flush_packet="0000"
+    printf "%s%s" "$cmd_packet" "$flush_packet"
 }
