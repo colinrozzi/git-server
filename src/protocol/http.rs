@@ -161,7 +161,10 @@ pub fn handle_receive_pack_request(
     log("body found, parsing request");
     match parse_v1_receive_pack_request(body) {
         Ok(push) => handle_v1_push(repo_state, push),
-        Err(e) => create_status_response(false, vec![format!("unpack {}", e)]),
+        Err(e) => {
+            // For parse errors, we don't have capabilities yet, so use basic response
+            create_status_response(false, vec![format!("unpack {}", e)])
+        },
     }
 }
 
@@ -173,6 +176,7 @@ pub fn handle_receive_pack_request(
 struct V1PushRequest {
     ref_updates: Vec<(String, String, String)>, // (ref_name, old_oid, new_oid)
     pack_data: Vec<u8>,
+    capabilities: Vec<String>, // Client-requested capabilities
 }
 
 fn parse_v1_receive_pack_request(data: &[u8]) -> Result<V1PushRequest, String> {
@@ -180,7 +184,9 @@ fn parse_v1_receive_pack_request(data: &[u8]) -> Result<V1PushRequest, String> {
 
     let mut cursor = 0;
     let mut ref_updates = Vec::new();
+    let mut capabilities = Vec::new();
     let mut pack_start = 0;
+    let mut first_ref = true;
 
     // Phase 1: Parse ref update commands
     while cursor < data.len() {
@@ -212,18 +218,63 @@ fn parse_v1_receive_pack_request(data: &[u8]) -> Result<V1PushRequest, String> {
             .map_err(|_| "Invalid UTF-8")?
             .trim_end_matches('\n');
 
-        // Parse ref update line: "old-oid new-oid ref-name"
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            ref_updates.push((
-                parts[2].to_string(), // ref name
-                parts[0].to_string(), // old oid
-                parts[1].to_string(), // new oid
-            ));
-            log(&format!(
-                "Parsed ref update: {} {} -> {}",
-                parts[2], parts[0], parts[1]
-            ));
+        // Parse ref update line: "old-oid new-oid ref-name [\0capabilities]"
+        if first_ref {
+            // First ref may contain capabilities after null byte
+            if let Some(null_pos) = line.find('\0') {
+                let ref_part = &line[..null_pos];
+                let cap_part = &line[null_pos + 1..];
+                
+                // Parse capabilities
+                capabilities = cap_part.split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                    
+                log(&format!("Parsed capabilities: {:?}", capabilities));
+                
+                // Parse ref update from the part before null
+                let parts: Vec<&str> = ref_part.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    ref_updates.push((
+                        parts[2].to_string(), // ref name
+                        parts[0].to_string(), // old oid
+                        parts[1].to_string(), // new oid
+                    ));
+                    log(&format!(
+                        "Parsed ref update: {} {} -> {}",
+                        parts[2], parts[0], parts[1]
+                    ));
+                }
+            } else {
+                // No capabilities, parse as normal
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    ref_updates.push((
+                        parts[2].to_string(), // ref name
+                        parts[0].to_string(), // old oid
+                        parts[1].to_string(), // new oid
+                    ));
+                    log(&format!(
+                        "Parsed ref update: {} {} -> {}",
+                        parts[2], parts[0], parts[1]
+                    ));
+                }
+            }
+            first_ref = false;
+        } else {
+            // Subsequent refs don't have capabilities
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                ref_updates.push((
+                    parts[2].to_string(), // ref name
+                    parts[0].to_string(), // old oid
+                    parts[1].to_string(), // new oid
+                ));
+                log(&format!(
+                    "Parsed ref update: {} {} -> {}",
+                    parts[2], parts[0], parts[1]
+                ));
+            }
         }
 
         cursor += len as usize;
@@ -245,6 +296,7 @@ fn parse_v1_receive_pack_request(data: &[u8]) -> Result<V1PushRequest, String> {
     Ok(V1PushRequest {
         ref_updates,
         pack_data,
+        capabilities,
     })
 }
 
@@ -252,7 +304,7 @@ fn handle_v1_push(repo_state: &mut GitRepoState, push: V1PushRequest) -> HttpRes
     log("Processing Protocol v1 push operation");
 
     if push.ref_updates.is_empty() && push.pack_data.is_empty() {
-        return create_status_response(true, vec![]);
+        return create_status_response_with_capabilities(true, vec![], &push.capabilities);
     }
 
     match repo_state.process_push_operation(&push.pack_data, push.ref_updates) {
@@ -270,9 +322,9 @@ fn handle_v1_push(repo_state: &mut GitRepoState, push: V1PushRequest) -> HttpRes
                     }
                 })
                 .collect();
-            create_status_response(true, ref_statuses)
+            create_status_response_with_capabilities(true, ref_statuses, &push.capabilities)
         }
-        Err(e) => create_status_response(false, vec![format!("unpack {}", e)]),
+        Err(e) => create_status_response_with_capabilities(false, vec![format!("unpack {}", e)], &push.capabilities),
     }
 }
 
@@ -438,19 +490,42 @@ fn create_error_response(message: &str) -> HttpResponse {
 }
 
 pub fn create_status_response(success: bool, ref_statuses: Vec<String>) -> HttpResponse {
-    let mut data = Vec::new();
+    create_status_response_with_capabilities(success, ref_statuses, &[])
+}
 
-    // Unpack status
+pub fn create_status_response_with_capabilities(
+    success: bool, 
+    ref_statuses: Vec<String>,
+    capabilities: &[String]
+) -> HttpResponse {
+    let mut data = Vec::new();
+    let use_sideband = capabilities.contains(&"side-band-64k".to_string());
+    
+    log(&format!("Creating status response with sideband: {}", use_sideband));
+
+    // Unpack status  
     if success {
-        data.extend(encode_pkt_line(b"unpack ok\n"));
+        if use_sideband {
+            data.extend(encode_progress_message(b"unpack ok\n"));
+        } else {
+            data.extend(encode_pkt_line(b"unpack ok\n"));
+        }
     } else {
-        data.extend(encode_pkt_line(b"unpack failed\n"));
+        if use_sideband {
+            data.extend(encode_progress_message(b"unpack failed\n"));
+        } else {
+            data.extend(encode_pkt_line(b"unpack failed\n"));
+        }
     }
 
     // Reference statuses
     for status in ref_statuses {
         let line = format!("{}\n", status);
-        data.extend(encode_pkt_line(line.as_bytes()));
+        if use_sideband {
+            data.extend(encode_progress_message(line.as_bytes()));
+        } else {
+            data.extend(encode_pkt_line(line.as_bytes()));
+        }
     }
 
     data.extend(encode_flush_pkt());
@@ -467,4 +542,17 @@ fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
 
 fn encode_flush_pkt() -> Vec<u8> {
     b"0000".to_vec()
+}
+
+// Sideband encoding functions
+fn encode_sideband_data(band: u8, data: &[u8]) -> Vec<u8> {
+    let total_len = data.len() + 5; // 4 bytes length + 1 byte band + data
+    let mut result = format!("{:04x}", total_len).into_bytes();
+    result.push(band);
+    result.extend_from_slice(data);
+    result
+}
+
+fn encode_progress_message(message: &[u8]) -> Vec<u8> {
+    encode_sideband_data(2, message) // Band 2 = progress/status messages
 }
