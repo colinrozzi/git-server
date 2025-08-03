@@ -28,14 +28,14 @@ impl ObjectType {
         match pack_type {
             1 => Some(ObjectType::Commit),
             2 => Some(ObjectType::Tree),
-            3 => Some(ObjectType::Blob), 
+            3 => Some(ObjectType::Blob),
             4 => Some(ObjectType::Tag),
             6 => Some(ObjectType::OfDelta),
             7 => Some(ObjectType::RefDelta),
             _ => None,
         }
     }
-    
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ObjectType::Commit => "commit",
@@ -53,8 +53,8 @@ impl ObjectType {
 pub struct PackObject {
     pub obj_type: ObjectType,
     pub data: Vec<u8>,
-    pub base_offset: Option<u64>,  // For delta objects
-    pub ref_hash: Option<String>,  // For ref-delta objects
+    pub base_offset: Option<u64>, // For delta objects
+    pub ref_hash: Option<String>, // For ref-delta objects
 }
 
 /// Git pack file parser
@@ -78,25 +78,22 @@ impl<'a> PackParser<'a> {
     pub fn parse(&mut self) -> Result<Vec<GitObject>, String> {
         self.parse_header()?;
         let object_count = self.parse_object_count()?;
-        
-        log(&format!(
-            "Parsing pack file with {} objects", 
-            object_count
-        ));
-        
+
+        log(&format!("Parsing pack file with {} objects", object_count));
+
         let mut objects = Vec::new();
-        
+
         for _ in 0..object_count {
             let pack_obj = self.parse_object()?;
-            
+
             // Convert PackObject to GitObject
             let git_obj = self.convert_pack_object(pack_obj)?;
             objects.push(git_obj);
         }
-        
+
         // Skip checksum for now
-        let _ = self.verify_checksum(); 
-        
+        let _ = self.verify_checksum();
+
         Ok(objects)
     }
 
@@ -109,19 +106,15 @@ impl<'a> PackParser<'a> {
         let signature = &self.data[..4];
         if signature != PACK_SIGNATURE {
             return Err(format!(
-                "Invalid pack signature: expected {:?}, got {:?}", 
+                "Invalid pack signature: expected {:?}, got {:?}",
                 PACK_SIGNATURE, signature
             ));
         }
 
-        let version = u32::from_be_bytes([
-            self.data[4], self.data[5], self.data[6], self.data[7]
-        ]);
-        
+        let version = u32::from_be_bytes([self.data[4], self.data[5], self.data[6], self.data[7]]);
+
         if version != PACK_VERSION {
-            return Err(format!(
-                "Unsupported pack version: {}", version
-            ));
+            return Err(format!("Unsupported pack version: {}", version));
         }
 
         self.offset = 8;
@@ -129,15 +122,19 @@ impl<'a> PackParser<'a> {
     }
 
     /// Parse the object count from the header
-    fn parse_object_count(&self) -> Result<u32, String> {
-        if self.data.len() < 12 {
+    fn parse_object_count(&mut self) -> Result<u32, String> {
+        if self.data.len() < self.offset + 4 {
             return Err("Pack file too small for object count".to_string());
         }
 
         let count = u32::from_be_bytes([
-            self.data[8], self.data[9], self.data[10], self.data[11]
+            self.data[self.offset],
+            self.data[self.offset + 1],
+            self.data[self.offset + 2],
+            self.data[self.offset + 3],
         ]);
 
+        self.offset += 4; // ⬅️  advance past the object-count field
         Ok(count)
     }
 
@@ -148,12 +145,13 @@ impl<'a> PackParser<'a> {
         }
 
         let (obj_type, size) = self.parse_object_header()?;
-        
+
         // Read compressed data
         let compressed_data = &self.data[self.offset..];
         let mut decoder = ZlibDecoder::new(compressed_data);
         let mut decompressed_data = Vec::new();
-        decoder.read_to_end(&mut decompressed_data)
+        decoder
+            .read_to_end(&mut decompressed_data)
             .map_err(|e| format!("Failed to decompress object: {}", e))?;
 
         // Update offset
@@ -177,7 +175,7 @@ impl<'a> PackParser<'a> {
         let mut byte = self.data[self.offset];
         let obj_type_num = (byte >> 4) & 0x07;
         let mut size = (byte & 0x0f) as usize;
-        
+
         let mut shift = 4;
         self.offset += 1;
 
@@ -201,23 +199,29 @@ impl<'a> PackParser<'a> {
     /// Convert PackObject to GitObject
     fn convert_pack_object(&self, pack_obj: PackObject) -> Result<GitObject, String> {
         let data = &pack_obj.data;
-        
+
         match pack_obj.obj_type {
             ObjectType::Commit => self.parse_commit_objects(data),
             ObjectType::Tree => self.parse_tree_object(data),
-            ObjectType::Blob => Ok(GitObject::Blob { content: data.to_vec() }),
+            ObjectType::Blob => Ok(GitObject::Blob {
+                content: data.to_vec(),
+            }),
             ObjectType::Tag => {
                 // Parse tag object (simple implementation)
-                let content_str = std::str::from_utf8(data)
-                    .map_err(|_| "Invalid UTF-8 in tag object")?;
-                
-                let object = self.extract_commit_field(content_str, "object")
+                let content_str =
+                    std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in tag object")?;
+
+                let object = self
+                    .extract_commit_field(content_str, "object")
                     .unwrap_or_else(|| "unknown".to_string());
-                let tag_type = self.extract_commit_field(content_str, "type")
+                let tag_type = self
+                    .extract_commit_field(content_str, "type")
                     .unwrap_or_else(|| "commit".to_string());
-                let tagger = self.extract_commit_field(content_str, "tagger")
+                let tagger = self
+                    .extract_commit_field(content_str, "tagger")
                     .unwrap_or_else(|| "unknown".to_string());
-                let message = self.extract_commit_field(content_str, "")
+                let message = self
+                    .extract_commit_field(content_str, "")
                     .unwrap_or_else(|| content_str.to_string());
 
                 Ok(GitObject::Tag {
@@ -235,21 +239,25 @@ impl<'a> PackParser<'a> {
 
     /// Parse commit object
     fn parse_commit_objects(&self, data: &[u8]) -> Result<GitObject, String> {
-        let content_str = std::str::from_utf8(data)
-            .map_err(|_| "Invalid UTF-8 in commit object")?;
+        let content_str =
+            std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in commit object")?;
 
-        let tree = self.extract_commit_field(content_str, "tree")
+        let tree = self
+            .extract_commit_field(content_str, "tree")
             .ok_or("Missing tree in commit")?;
 
         let parents = self.extract_all_commit_fields(content_str, "parent");
-        
-        let author = self.extract_commit_field(content_str, "author")
+
+        let author = self
+            .extract_commit_field(content_str, "author")
             .unwrap_or_else(|| "unknown author".to_string());
 
-        let committer = self.extract_commit_field(content_str, "committer")
+        let committer = self
+            .extract_commit_field(content_str, "committer")
             .unwrap_or_else(|| "unknown committer".to_string());
 
-        let message = self.extract_commit_field(content_str, "")
+        let message = self
+            .extract_commit_field(content_str, "")
             .unwrap_or_else(|| content_str.to_string());
 
         Ok(GitObject::Commit {
@@ -309,11 +317,7 @@ impl<'a> PackParser<'a> {
             // Convert binary to hex string
             let hash = hex::encode(hash_bytes);
 
-            entries.push(TreeEntry::new(
-                mode.to_string(),
-                name.to_string(),
-                hash,
-            ));
+            entries.push(TreeEntry::new(mode.to_string(), name.to_string(), hash));
         }
 
         Ok(GitObject::Tree { entries })
@@ -331,7 +335,8 @@ impl<'a> PackParser<'a> {
         }
 
         let prefix = format!("{} ", field);
-        content.lines()
+        content
+            .lines()
             .find(|line| line.starts_with(&prefix))
             .map(|line| line[prefix.len()..].trim().to_string())
     }
@@ -339,7 +344,8 @@ impl<'a> PackParser<'a> {
     /// Extract all occurrences of a commit field (like parent)
     fn extract_all_commit_fields(&self, content: &str, field: &str) -> Vec<String> {
         let prefix = format!("{} ", field);
-        content.lines()
+        content
+            .lines()
             .filter_map(|line| {
                 if line.starts_with(&prefix) {
                     Some(line[prefix.len()..].trim().to_string())
@@ -379,12 +385,23 @@ mod tests {
 
     #[test]
     fn test_extract_commit_field() {
-        let commit_content = b"tree abc123\nparent def456\nauthor someone\ncommitter nobody\n\nInitial commit\n";
+        let commit_content =
+            b"tree abc123\nparent def456\nauthor someone\ncommitter nobody\n\nInitial commit\n";
         let parser = PackParser::new(&[]);
         let commit_str = std::str::from_utf8(commit_content).unwrap();
-        
-        assert_eq!(parser.extract_commit_field(commit_str, "tree"), Some("abc123".to_string()));
-        assert_eq!(parser.extract_commit_field(commit_str, "parent"), Some("def456".to_string()));
-        assert_eq!(parser.extract_all_commit_fields(commit_str, "parent"), vec!["def456"]);
+
+        assert_eq!(
+            parser.extract_commit_field(commit_str, "tree"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            parser.extract_commit_field(commit_str, "parent"),
+            Some("def456".to_string())
+        );
+        assert_eq!(
+            parser.extract_all_commit_fields(commit_str, "parent"),
+            vec!["def456"]
+        );
     }
 }
+
