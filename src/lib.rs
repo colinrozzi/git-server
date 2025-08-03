@@ -15,8 +15,8 @@ use bindings::theater::simple::runtime::log;
 use git::objects::GitObject;
 use git::repository::GitRepoState;
 use protocol::http::{
-    create_response, handle_smart_info_refs,
-    handle_upload_pack_request, handle_receive_pack_request,
+    create_response, handle_receive_pack_request, handle_smart_info_refs,
+    handle_upload_pack_request,
 };
 
 struct Component;
@@ -63,7 +63,10 @@ impl Guest for Component {
         // Register git handler
         let git_handler = match http_framework::register_handler("git") {
             Ok(handler_id) => {
-                log(&format!("✅ Successfully registered git handler with ID: {}", handler_id));
+                log(&format!(
+                    "✅ Successfully registered git handler with ID: {}",
+                    handler_id
+                ));
                 handler_id
             }
             Err(e) => {
@@ -139,8 +142,6 @@ impl Guest for Component {
 
         Ok((Some(serialized_state),))
     }
-
-
 }
 
 impl HttpHandlers for Component {
@@ -169,22 +170,26 @@ impl HttpHandlers for Component {
         } else {
             None
         };
-        
+
         let response = match path {
             "/info/refs" => {
-                log("🔍 Processing capability advertisement (Protocol v2)");
-                if let Some(service) = query.as_ref().and_then(|q| q.split('&').find(|p| p.starts_with("service=")).map(|p| p[8..].to_string())) {
+                log("processing /info/refs request");
+                if let Some(service) = query.as_ref().and_then(|q| {
+                    q.split('&')
+                        .find(|p| p.starts_with("service="))
+                        .map(|p| p[8..].to_string())
+                }) {
                     handle_smart_info_refs(&repo_state, &service)
                 } else {
                     create_response(400, "text/plain", b"Missing service parameter")
                 }
             }
             "/git-upload-pack" => {
-                log("📦 Processing upload-pack command (Protocol v2)");
+                log("processing upload-pack");
                 handle_upload_pack_request(&mut repo_state, &request)
             }
             "/git-receive-pack" => {
-                log("📤 Processing receive-pack (Protocol v2 style)");
+                log("processing receive-pack");
                 handle_receive_pack_request(&mut repo_state, &request)
             }
             "/" => {
@@ -224,7 +229,7 @@ impl HttpHandlers for Component {
                 // Modern refs debug endpoint
                 let mut refs_info = String::new();
                 refs_info.push_str("🔗 Git References (Protocol v2)\n\n");
-                
+
                 if repo_state.refs.is_empty() {
                     refs_info.push_str("📭 No refs found (empty repository)\n\n");
                     refs_info.push_str("💡 To add refs:\n");
@@ -234,14 +239,14 @@ impl HttpHandlers for Component {
                         refs_info.push_str(&format!("📎 {} -> {}\n", ref_name, hash));
                     }
                 }
-                
+
                 create_response(200, "text/plain", refs_info.as_bytes())
             }
             "/objects" => {
                 // Modern objects debug endpoint
                 let mut objects_info = String::new();
                 objects_info.push_str("📦 Git Objects (Protocol v2)\n\n");
-                
+
                 if repo_state.objects.is_empty() {
                     objects_info.push_str("📭 No objects found (empty repository)\n\n");
                     objects_info.push_str("💡 Objects will be created when you push commits\n");
@@ -256,7 +261,7 @@ impl HttpHandlers for Component {
                         objects_info.push_str(&format!("{} {} ({})\n", emoji, hash, obj_type));
                     }
                 }
-                
+
                 create_response(200, "text/plain", objects_info.as_bytes())
             }
             _ => {
@@ -276,7 +281,13 @@ impl HttpHandlers for Component {
         state: Option<Vec<u8>>,
         _params: (HandlerId, HttpRequest),
     ) -> Result<(Option<Vec<u8>>, (MiddlewareResult,)), String> {
-        Ok((state, (MiddlewareResult { proceed: true, request: _params.1 },)))
+        Ok((
+            state,
+            (MiddlewareResult {
+                proceed: true,
+                request: _params.1,
+            },),
+        ))
     }
 
     fn handle_websocket_connect(
