@@ -437,7 +437,13 @@ fn parse_receive_pack_request(data: &[u8]) -> Result<ReceivePackRequest, String>
         if parts.len() >= 3 {
             let old_hash = parts[0].to_string();
             let new_hash = parts[1].to_string();
-            let ref_name = parts[2].to_string();
+            
+            // Extract ref_name, stopping at NUL byte if present
+            let ref_name = if let Some(null_pos) = parts[2].find('\0') {
+                parts[2][..null_pos].to_string()
+            } else {
+                parts[2].to_string()
+            };
             
             // Extract capabilities from first command if present
             if first_command {
