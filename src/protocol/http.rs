@@ -70,6 +70,13 @@ fn handle_receive_pack_info_refs_v1(repo_state: &GitRepoState) -> HttpResponse {
 
     let mut response_data = Vec::new();
 
+    //
+    // 1. Smart-HTTP banner
+    //
+    let banner = b"# service=git-receive-pack\n";
+    response_data.extend(encode_pkt_line(banner));
+    response_data.extend(encode_flush_pkt()); // flush-pkt after banner
+
     // Protocol v1 format - advertise refs first, then capabilities
     if repo_state.refs.is_empty() {
         // Empty repository - advertise capabilities on the null ref
