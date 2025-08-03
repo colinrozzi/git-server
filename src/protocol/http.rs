@@ -36,8 +36,8 @@ pub struct CommandRequest {
 // ============================================================================
 
 /// Handle GET /info/refs - Protocol v2 capability advertisement
-pub fn handle_smart_info_refs(_repo_state: &GitRepoState, _service: &str) -> HttpResponse {
-    log("Generating Protocol v2 capability advertisement");
+pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpResponse {
+    log(&format!("Generating Protocol v2 capability advertisement for service: {}", service));
     
     let mut response_data = Vec::new();
     
@@ -50,18 +50,30 @@ pub fn handle_smart_info_refs(_repo_state: &GitRepoState, _service: &str) -> Htt
     // 3. Object format capability  
     response_data.extend(encode_pkt_line(b"object-format=sha1\n"));
     
-    // 4. Server options capability
-    response_data.extend(encode_pkt_line(b"server-option\n"));
+    match service {
+        "git-receive-pack" => {
+            // 4. Receive-pack specific capabilities for push operations
+            response_data.extend(encode_pkt_line(b"receive-pack=report-status delete-refs side-band-64k quiet atomic\n"));
+            response_data.extend(encode_pkt_line(b"ofs-delta\n"));
+        }
+        "git-upload-pack" | _ => {
+            // 4. Upload-pack capabilities for clone/pull operations
+            response_data.extend(encode_pkt_line(b"server-option\n"));
+            response_data.extend(encode_pkt_line(b"ls-refs=symrefs peel ref-prefix unborn\n"));
+            response_data.extend(encode_pkt_line(b"fetch=shallow thin-pack no-progress include-tag ofs-delta sideband-all wait-for-done\n"));
+            response_data.extend(encode_pkt_line(b"object-info=size\n"));
+        }
+    }
     
-    // 5. Commands with their features
-    response_data.extend(encode_pkt_line(b"ls-refs=symrefs peel ref-prefix unborn\n"));
-    response_data.extend(encode_pkt_line(b"fetch=shallow thin-pack no-progress include-tag ofs-delta sideband-all wait-for-done\n"));
-    response_data.extend(encode_pkt_line(b"object-info=size\n"));
-    
-    // 6. Flush packet to end advertisement
+    // 5. Flush packet to end advertisement
     response_data.extend(encode_flush_pkt());
     
-    create_response(200, "application/x-git-upload-pack-advertisement", &response_data)
+    let content_type = match service {
+        "git-receive-pack" => "application/x-git-receive-pack-advertisement",
+        _ => "application/x-git-upload-pack-advertisement",
+    };
+    
+    create_response(200, content_type, &response_data)
 }
 
 /// Handle POST /git-upload-pack - Protocol v2 command processing
@@ -91,13 +103,68 @@ pub fn handle_upload_pack_request(repo_state: &mut GitRepoState, request: &HttpR
 }
 
 /// Handle POST /git-receive-pack - Protocol v2 push operations
-pub fn handle_receive_pack_request(_repo_state: &mut GitRepoState, _request: &HttpRequest) -> HttpResponse {
+pub fn handle_receive_pack_request(repo_state: &mut GitRepoState, request: &HttpRequest) -> HttpResponse {
     log("Protocol v2 push operations use fetch command with different capabilities");
     
-    // In Protocol v2, push operations are handled differently
-    // For now, return a helpful message
-    let message = "Protocol v2 push operations are handled through the fetch command with push capabilities. Use /git-upload-pack endpoint.";
-    create_response(200, "text/plain", message.as_bytes())
+    if request.body.is_none() {
+        return create_error_response("Missing request body");
+    }
+    
+    let body = request.body.as_ref().unwrap();
+    
+    // Parse the Protocol v2 command request
+    let parsed_request = match parse_command_request(body) {
+        Ok(req) => req,
+        Err(e) => {
+            log(&format!("Failed to parse v2 receive-pack request: {}", e));
+            return create_error_response(&format!("Invalid request: {}", e));
+        }
+    };
+    
+    // Receive-pack uses the actual protocol flow, not command parsing
+    // The body contains: ref-updates + pack-data
+    let (ref_updates, pack_data) = match parse_receive_pack_data(body) {
+        Ok(result) => result,
+        Err(e) => {
+            log(&format!("Failed to parse receive-pack data: {}", e));
+            return create_status_response(false, &[format!("unpack {}", e)]);
+        }
+    };
+    
+    if ref_updates.is_empty() {
+        log("No ref updates in receive-pack request");
+        return create_status_response(true, &[]);
+    }
+    
+    log(&format!("Processing {} ref updates with {} bytes of pack data", 
+                ref_updates.len(), pack_data.len()));
+    
+    match repo_state.process_push_operation(&pack_data, ref_updates) {
+        Ok(updated_refs) => {
+            log(&format!("Push operation successful: {:?}", updated_refs));
+            
+            // Create success response with individual ref statuses
+            let ref_statuses: Vec<String> = updated_refs.iter()
+                .map(|status| {
+                    if status.starts_with("create ") {
+                        let ref_name = &status[7..];
+                        format!("ok {}", ref_name)
+                    } else if status.starts_with("update ") {
+                        let ref_name = &status[7..];
+                        format!("ok {}", ref_name)
+                    } else {
+                        status.clone()
+                    }
+                })
+                .collect();
+            
+            create_status_response(true, &ref_statuses)
+        }
+        Err(e) => {
+            log(&format!("Push operation failed: {}", e));
+            create_status_response(false, &[format!("unpack {}", e)])
+        }
+    }
 }
 
 /// Extract service parameter from query string (legacy support for info/refs)
@@ -553,6 +620,25 @@ fn create_error_response(message: &str) -> HttpResponse {
     create_response(400, "application/x-git-upload-pack-result", &response_data)
 }
 
+/// Create receive-pack status response
+pub fn create_status_response(success: bool, ref_statuses: &[String]) -> HttpResponse {
+    let mut response_data = Vec::new();
+    
+    // Send unpack status
+    let unpack_status = if success { "unpack ok" } else { "unpack error" };
+    response_data.extend(encode_pkt_line(format!("{}\n", unpack_status).as_bytes()));
+    
+    // Send individual ref statuses
+    for ref_status in ref_statuses {
+        response_data.extend(encode_pkt_line(format!("{}\n", ref_status).as_bytes()));
+    }
+    
+    // Flush packet to end response
+    response_data.extend(encode_flush_pkt());
+    
+    create_response(200, "application/x-git-receive-pack-result", &response_data)
+}
+
 // ============================================================================
 // PACKET-LINE UTILITIES
 // ============================================================================
@@ -584,3 +670,61 @@ pub fn encode_delim_pkt() -> Vec<u8> {
 pub fn encode_response_end_pkt() -> Vec<u8> {
     b"0002".to_vec()
 }
+
+// ============================================================================
+// RECEIVE-PACK SPECIFIC UTILITIES
+// ============================================================================
+
+/// Parse receive-pack data into ref-updates and pack-data components
+fn parse_receive_pack_data(body: &[u8]) -> Result<(Vec<(String, String, String)>, Vec<u8>), String> {
+    log("Parsing receive-pack data structure");
+    
+    let mut pos = 0;
+    let mut ref_updates = Vec::new();
+    let mut pack_data = Vec::new();
+    
+    // Skip any command/announcement packets
+    while pos < body.len() && body[pos..].starts_with(b"000ecommand=receive-pack") {
+        pos = body[pos..].windows(4).position(|w| w == b"0000").map(|p| pos + p + 4).unwrap_or(pos + 4);
+    }
+    
+    // Parse ref updates - format: <old-sha> <new-sha> <ref-name>\0<caps>\n\n
+    let lines: Vec<&[u8]> = body[pos..].split(|&b| b == b'\n').collect();
+    
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.is_empty() {
+            i += 1;
+            continue;
+        }
+        
+        let line_str = std::str::from_utf8(line).map_err(|_| "Invalid UTF-8 in ref update")?;
+        let parts: Vec<&str> = line_str.split_whitespace().collect();
+        
+        if parts.len() == 3 && parts[0].len() == 40 && parts[1].len() == 40 {
+            let old_oid = parts[0].to_string();
+            let new_oid = parts[1].to_string(); 
+            let ref_name = parts[2].to_string();
+            
+            ref_updates.push((ref_name, old_oid, new_oid));
+            i += 1;
+        } else {
+            // This is probably pack data
+            break;
+        }
+    }
+    
+    // The rest is pack data (PACK...)
+    let remaining_data = &body[pos..];
+    if !remaining_data.is_empty() && remaining_data.starts_with(b"PACK") {
+        pack_data = remaining_data.to_vec();
+    }
+    
+    log(&format!("Parsed {} ref updates and {} bytes pack data", ref_updates.len(), pack_data.len()));
+    Ok((ref_updates, pack_data))
+}
+
+/// Helper to validate ref format
+fn is_valid_ref_name(name: &str) -> bool {
+    name.starts_with("refs/heads/") || name.starts_with("refs/tags/") || name == "HEAD"}

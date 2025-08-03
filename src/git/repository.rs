@@ -1,8 +1,10 @@
 use super::objects::{GitObject, TreeEntry};
+use super::pack::parse_pack_file;
 use crate::utils::hash::calculate_git_hash_raw;
 use crate::utils::logging::safe_log as log;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GitRepoState {
@@ -417,6 +419,110 @@ impl GitRepoState {
         self.refs.get(ref_name)
     }
 
+    /// Repository update methods for push operations
+    pub fn process_pack_file(&mut self, pack_data: &[u8]) -> Result<Vec<String>, String> {
+        log("Processing incoming pack file for repository updates");
+        
+        let objects = parse_pack_file(pack_data)?;
+        let mut new_hashes = Vec::new();
+        
+        log(&format!("Parsed {} objects from pack file", objects.len()));
+        
+        for obj in objects {
+            let hash = crate::utils::hash::calculate_git_hash(&obj);
+            
+            // Only add new objects, skip duplicates
+            if !self.objects.contains_key(&hash) {
+                self.add_object(hash.clone(), obj);
+                new_hashes.push(hash);
+            }
+        }
+        
+        log(&format!("Added {} new objects to repository", new_hashes.len()));
+        Ok(new_hashes)
+    }
+
+    /// Update repository refs based on push commands
+    pub fn update_refs_from_push(&mut self, ref_updates: Vec<(String, String, String)>) -> Result<Vec<String>, String> {
+        let mut updated_refs = Vec::new();
+        
+        for (ref_name, old_oid, new_oid) in ref_updates {
+            log(&format!(
+                "Processing ref update: {} {} -> {}",
+                ref_name, old_oid, new_oid
+            ));
+            
+            // Validate new OID exists
+            if !self.objects.contains_key(&new_oid) {
+                return Err(format!(
+                    "Cannot update ref {}: new object {} not found in repository",
+                    ref_name, new_oid
+                ));
+            }
+            
+            // Handle different types of ref updates
+            if old_oid == "0000000000000000000000000000000000000000" {
+                // Create new reference
+                log(&format!("Creating new reference {}", ref_name));
+                self.update_ref(ref_name.clone(), new_oid);
+                updated_refs.push(format!("create {}", ref_name));
+                
+                // For first branch created to empty repo, set HEAD
+                if self.refs.len() == 1 && ref_name.starts_with("refs/heads/") {
+                    self.head = ref_name.clone();
+                    log(&format!("Setting HEAD to {}", ref_name));
+                }
+            } else if new_oid == "0000000000000000000000000000000000000000" {
+                // Delete reference (not in scope for empty repo push)
+                log(&format!("Deleting reference {}", ref_name));
+                self.delete_ref(&ref_name);
+                updated_refs.push(format!("delete {}", ref_name));
+            } else {
+                // Update existing reference (not in scope for empty repo push)
+                log(&format!("Updating existing reference {}", ref_name));  
+                self.update_ref(ref_name.clone(), new_oid);
+                updated_refs.push(format!("update {}", ref_name));
+            }
+        }
+        
+        log(&format!("Updated {} refs in repository", updated_refs.len()));
+        Ok(updated_refs)
+    }
+
+    /// Process a complete push operation
+    pub fn process_push_operation(
+        &mut self,
+        pack_data: &[u8],
+        ref_updates: Vec<(String, String, String)>
+    ) -> Result<Vec<String>, String> {
+        log("Processing complete push operation");
+        
+        // Phase 1: Parse and store pack file objects
+        let new_hashes = self.process_pack_file(pack_data)?;
+        
+        // Phase 2: Validate all ref targets exist
+        for (_, _, new_oid) in &ref_updates {
+            if !self.objects.contains_key(new_oid) {
+                return Err(format!(
+                    "Ref update validation failed: object {} not found",
+                    new_oid
+                ));
+            }
+        }
+        
+        // Phase 3: Update refs
+        let updated_refs = self.update_refs_from_push(ref_updates)?;
+        
+        // Phase 4: Verify repository consistency
+        let errors = self.validate();
+        if !errors.is_empty() {
+            return Err(format!("Repository validation failed: {:?}", errors));
+        }
+        
+        log(&format!("Push operation completed successfully"));
+        Ok(updated_refs)
+    }
+
     /// Ensure we have minimal objects for Smart HTTP testing
     pub fn ensure_minimal_objects_for_smart_http(&mut self) {
         if self.objects.is_empty() {
@@ -430,7 +536,7 @@ impl GitRepoState {
             self.add_object(blob_hash.clone(), blob);
 
             // Create a simple tree containing the blob
-            let tree_entry = crate::git::objects::TreeEntry::new(
+            let tree_entry = TreeEntry::new(
                 "100644".to_string(),
                 "README.md".to_string(),
                 blob_hash.clone(),
