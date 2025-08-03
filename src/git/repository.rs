@@ -764,7 +764,9 @@ pub fn serialize_commit_object(
     // Use the actual author and committer strings as-is (they include timestamps)
     content.push_str(&format!("author {}\n", author));
     content.push_str(&format!("committer {}\n", committer));
+    content.push('\n'); // Empty line before message
     content.push_str(message);
+    content.push('\n'); // Trailing newline after message
 
     // CRITICAL FIX: Git commit objects should NOT have trailing newlines
     // The message itself should be the final content without additional newlines
