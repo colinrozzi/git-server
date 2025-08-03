@@ -481,10 +481,12 @@ fn process_receive_pack_request(
     
     // Process pack data first if present
     if let Some(pack_data) = &request.pack_data {
-        if let Err(e) = process_pack_data(repo_state, pack_data) {
-            log(&format!("Failed to process pack data: {}", e));
-            return generate_push_response(&request, false, &format!("unpack {}", e), &[]);
-        }
+        log(&format!("TEMPORARILY SKIPPING pack data processing ({} bytes)", pack_data.len()));
+        // TEMPORARY: Skip pack processing to test response format
+        // if let Err(e) = process_pack_data(repo_state, pack_data) {
+        //     log(&format!("Failed to process pack data: {}", e));
+        //     return generate_push_response(&request, false, &format!("unpack {}", e), &[]);
+        // }
     }
     
     // Process each ref update command
