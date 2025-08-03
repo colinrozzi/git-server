@@ -91,6 +91,10 @@ run_all_tests() {
         "07_git_client_compatibility"
         "08_packet_line_validation"
         "09_state_persistence"
+        "10_receive_pack_capabilities"
+        "11_empty_repository_push"
+        "12_pack_file_parsing"
+        "13_repository_updates"
     )
     
     for test in "${test_files[@]}"; do
