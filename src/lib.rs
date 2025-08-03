@@ -40,10 +40,10 @@ impl Guest for Component {
         };
 
         // Start with empty repository - objects will come from git push
-        log("Starting with empty repository - ready to receive pushes");
+        log("Starting with COMPLETELY empty repository for push testing");
 
-        // Add test objects for Smart HTTP
-        repo_state.ensure_minimal_objects_for_smart_http();
+        // TEMPORARILY: Skip adding test objects to test push-first approach
+        // repo_state.ensure_minimal_objects_for_smart_http();
 
         log(&format!(
             "Git repository '{}' initialized with {} refs and {} objects",
