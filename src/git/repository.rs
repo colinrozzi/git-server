@@ -764,7 +764,6 @@ pub fn serialize_commit_object(
     // Use the actual author and committer strings as-is (they include timestamps)
     content.push_str(&format!("author {}\n", author));
     content.push_str(&format!("committer {}\n", committer));
-    content.push('\n');
     content.push_str(message);
 
     // CRITICAL FIX: Git commit objects should NOT have trailing newlines
