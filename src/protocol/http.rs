@@ -159,7 +159,6 @@ pub fn handle_receive_pack_request(
     };
 
     log("body found, parsing request");
-
     match parse_v1_receive_pack_request(body) {
         Ok(push) => handle_v1_push(repo_state, push),
         Err(e) => create_status_response(false, vec![format!("unpack {}", e)]),
@@ -258,6 +257,7 @@ fn handle_v1_push(repo_state: &mut GitRepoState, push: V1PushRequest) -> HttpRes
 
     match repo_state.process_push_operation(&push.pack_data, push.ref_updates) {
         Ok(statuses) => {
+            log("Push operation successful, processing statuses");
             let ref_statuses: Vec<String> = statuses
                 .iter()
                 .map(|status| {
