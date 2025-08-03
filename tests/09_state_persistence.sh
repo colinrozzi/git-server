@@ -65,14 +65,14 @@ fi
 echo -n "  ✓ ls-refs response consistency... "
 curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0012command=ls-refs\n0000' \
+    --data-binary $'0013command=ls-refs0000' \
     "$SERVER_URL/git-upload-pack" > "$TEMP_DIR/ls_refs_1"
 
 sleep 1
 
 curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0012command=ls-refs\n0000' \
+    --data-binary $'0013command=ls-refs0000' \
     "$SERVER_URL/git-upload-pack" > "$TEMP_DIR/ls_refs_2"
 
 if diff "$TEMP_DIR/ls_refs_1" "$TEMP_DIR/ls_refs_2" >/dev/null; then
@@ -109,17 +109,17 @@ echo -n "  ✓ State stability after protocol operations... "
 # Perform several Protocol v2 operations
 curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0012command=ls-refs\n0000' \
+    --data-binary $'0013command=ls-refs0000' \
     "$SERVER_URL/git-upload-pack" > /dev/null
 
 curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0011command=fetch\n0008done\n0000' \
+    --data-binary $'0011command=fetch0008done0000' \
     "$SERVER_URL/git-upload-pack" > /dev/null
 
 curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0016command=object-info\n0008size\n0000' \
+    --data-binary $'0017command=object-info0008size0000' \
     "$SERVER_URL/git-upload-pack" > /dev/null
 
 # Check state after operations

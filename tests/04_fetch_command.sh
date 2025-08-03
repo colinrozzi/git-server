@@ -46,19 +46,19 @@ test_fetch() {
 }
 
 # Test basic fetch (empty repo case)
-test_fetch "Basic fetch (done only)" $'0011command=fetch\n0008done\n0000' "$TEMP_DIR/fetch_basic"
+test_fetch "Basic fetch (done only)" $'0011command=fetch0008done0000' "$TEMP_DIR/fetch_basic"
 
 # Test fetch with capabilities
-test_fetch "fetch with no-progress" $'0011command=fetch\n0010no-progress\n0008done\n0000' "$TEMP_DIR/fetch_no_progress"
+test_fetch "fetch with no-progress" $'0011command=fetch000fno-progress0008done0000' "$TEMP_DIR/fetch_no_progress"
 
 # Test fetch with thin-pack capability
-test_fetch "fetch with thin-pack" $'0011command=fetch\n000ethin-pack\n0008done\n0000' "$TEMP_DIR/fetch_thin_pack"
+test_fetch "fetch with thin-pack" $'0011command=fetch000dthin-pack0008done0000' "$TEMP_DIR/fetch_thin_pack"
 
 # Test fetch with ofs-delta capability
-test_fetch "fetch with ofs-delta" $'0011command=fetch\n000dofs-delta\n0008done\n0000' "$TEMP_DIR/fetch_ofs_delta"
+test_fetch "fetch with ofs-delta" $'0011command=fetch000dofs-delta0008done0000' "$TEMP_DIR/fetch_ofs_delta"
 
 # Test fetch with sideband-all capability
-test_fetch "fetch with sideband-all" $'0011command=fetch\n0011sideband-all\n0008done\n0000' "$TEMP_DIR/fetch_sideband"
+test_fetch "fetch with sideband-all" $'0011command=fetch0010sideband-all0008done0000' "$TEMP_DIR/fetch_sideband"
 
 # Validate response structure for empty repo
 echo -n "  ✓ Empty repo response format... "
@@ -85,7 +85,7 @@ fi
 echo -n "  ✓ Handles invalid want gracefully... "
 if response=$(curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0011command=fetch\n004cwant 0000000000000000000000000000000000000000\n0008done\n0000' \
+    --data-binary $'0011command=fetch0031want 00000000000000000000000000000000000000000008done0000' \
     -w "%{http_code}" \
     -o "$TEMP_DIR/fetch_invalid_want" \
     "$SERVER_URL/git-upload-pack"); then

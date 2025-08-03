@@ -18,7 +18,7 @@ echo "Testing error handling..."
 echo -n "  ✓ Invalid command rejection... "
 if response=$(curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0015command=invalid\n0000' \
+    --data-binary $'0013command=invalid0000' \
     -w "%{http_code}" \
     -o "$TEMP_DIR/error_invalid_command" \
     "$SERVER_URL/git-upload-pack"); then

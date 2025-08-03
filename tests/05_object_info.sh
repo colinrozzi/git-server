@@ -46,16 +46,16 @@ test_object_info() {
 }
 
 # Test basic object-info with size
-test_object_info "object-info with size" $'0016command=object-info\n0008size\n0000' "$TEMP_DIR/object_info_size"
+test_object_info "object-info with size" $'0017command=object-info0008size0000' "$TEMP_DIR/object_info_size"
 
 # Test object-info with content
-test_object_info "object-info with content" $'0016command=object-info\n000bcontent\n0000' "$TEMP_DIR/object_info_content"
+test_object_info "object-info with content" $'0017command=object-info000bcontent0000' "$TEMP_DIR/object_info_content"
 
 # Test object-info with content-limit
-test_object_info "object-info with content-limit" $'0016command=object-info\n000bcontent\n0013content-limit=100\n0000' "$TEMP_DIR/object_info_limit"
+test_object_info "object-info with content-limit" $'0017command=object-info000bcontent0015content-limit=1000000' "$TEMP_DIR/object_info_limit"
 
 # Test object-info with content-encoding
-test_object_info "object-info with content-encoding" $'0016command=object-info\n000bcontent\n0018content-encoding=base64\n0000' "$TEMP_DIR/object_info_encoding"
+test_object_info "object-info with content-encoding" $'0017command=object-info000bcontent001bcontent-encoding=base640000' "$TEMP_DIR/object_info_encoding"
 
 # Validate response format
 echo -n "  ✓ Response format validation... "

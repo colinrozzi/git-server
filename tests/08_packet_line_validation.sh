@@ -79,7 +79,7 @@ validate_packet_line "$TEMP_DIR/packet_capabilities" "Capability advertisement"
 echo -n "  ✓ Getting ls-refs response... "
 if curl -s -X POST \
     -H "Content-Type: application/x-git-upload-pack-request" \
-    --data-binary $'0012command=ls-refs\n0000' \
+    --data-binary $'0013command=ls-refs0000' \
     "$SERVER_URL/git-upload-pack" > "$TEMP_DIR/packet_ls_refs"; then
     echo -e "${GREEN}PASS${NC}"
 else

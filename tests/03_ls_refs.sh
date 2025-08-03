@@ -46,19 +46,19 @@ test_ls_refs() {
 }
 
 # Test basic ls-refs command
-test_ls_refs "Basic ls-refs" $'0012command=ls-refs\n0000' "$TEMP_DIR/ls_refs_basic"
+test_ls_refs "Basic ls-refs" $'0013command=ls-refs0000' "$TEMP_DIR/ls_refs_basic"
 
 # Test ls-refs with symrefs option
-test_ls_refs "ls-refs with symrefs" $'0012command=ls-refs\n000csymrefs\n0000' "$TEMP_DIR/ls_refs_symrefs"
+test_ls_refs "ls-refs with symrefs" $'0013command=ls-refs000bsymrefs0000' "$TEMP_DIR/ls_refs_symrefs"
 
 # Test ls-refs with ref-prefix filtering
-test_ls_refs "ls-refs with ref-prefix" $'0012command=ls-refs\n001eref-prefix refs/heads/\n0000' "$TEMP_DIR/ls_refs_prefix"
+test_ls_refs "ls-refs with ref-prefix" $'0013command=ls-refs001aref-prefix refs/heads/0000' "$TEMP_DIR/ls_refs_prefix"
 
 # Test ls-refs with peel option
-test_ls_refs "ls-refs with peel" $'0012command=ls-refs\n0008peel\n0000' "$TEMP_DIR/ls_refs_peel"
+test_ls_refs "ls-refs with peel" $'0013command=ls-refs0008peel0000' "$TEMP_DIR/ls_refs_peel"
 
 # Test ls-refs with unborn option
-test_ls_refs "ls-refs with unborn" $'0012command=ls-refs\n000aunborn\n0000' "$TEMP_DIR/ls_refs_unborn"
+test_ls_refs "ls-refs with unborn" $'0013command=ls-refs000aunborn0000' "$TEMP_DIR/ls_refs_unborn"
 
 # Validate response format
 echo -n "  ✓ Response ends with flush packet... "
