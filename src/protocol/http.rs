@@ -135,18 +135,21 @@ struct CommandRequest {
 }
 
 fn handle_ls_refs(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResponse {
+    log("Handling ls-refs command");
     let mut response = Vec::new();
     
     if repo_state.refs.is_empty() {
+        log("Empty repository - showing unborn HEAD");
         // Empty repo - show unborn HEAD
         response.extend(encode_pkt_line("unborn HEAD symref-target:refs/heads/main\n".as_bytes()));
-    }
-    
-    let mut refs: Vec<_> = repo_state.refs.iter().collect();
-    refs.sort_by_key(|(name, _)| *name);
-    
-    for (ref_name, hash) in refs {
-        response.extend(encode_pkt_line(format!("{} {}\n", hash, ref_name).as_bytes()));
+    } else {
+        let mut refs: Vec<_> = repo_state.refs.iter().collect();
+        refs.sort_by_key(|(name, _)| *name);
+        
+        for (ref_name, hash) in refs {
+            let line = format!("{} {}\n", hash, ref_name);
+            response.extend(encode_pkt_line(line.as_bytes()));
+        }
     }
     
     response.extend(encode_flush_pkt());
@@ -162,6 +165,9 @@ fn handle_object_info(repo_state: &GitRepoState, _request: &CommandRequest) -> H
 }
 
 fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
+    log(&format!("Parsing command request, data length: {} bytes", data.len()));
+    log(&format!("Raw data hex: {}", hex::encode(data)));
+    
     let mut lines = Vec::new();
     let mut pos = 0;
     
@@ -183,20 +189,36 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
         }
         
         let content = &data[pos+4..pos+len as usize];
+        log(&format!("Packet {}: len={}, content_bytes={:?}", lines.len(), len, content));
+        
         let line = std::str::from_utf8(content)
             .map_err(|_| "Invalid UTF-8")?
-            .trim_end_matches('\n');
+            .trim_end_matches('\n'); // Only remove trailing newline as per protocol
         
-        lines.push(line.to_string());
+        log(&format!("Parsed line: '{}'", line));
+        
+        if !line.is_empty() {
+            lines.push(line.to_string());
+        }
         pos += len as usize;
     }
     
-    let command = lines.get(0).ok_or("Missing command")?;
+    if lines.is_empty() {
+        return Err("No command found in request".to_string());
+    }
+    
+    let first_line = &lines[0];
+    let command = if let Some(cmd) = first_line.strip_prefix("command=") {
+        cmd.to_string()
+    } else {
+        return Err(format!("Invalid command format: {}", first_line));
+    };
+    
+    log(&format!("Parsed command: '{}' from '{}' lines", command, lines.len()));
     
     Ok(CommandRequest {
-        command: command.strip_prefix("command=")
-                        .ok_or("Missing command= prefix")?.to_string(),
-        capabilities: vec![],  // Simplified for now
+        command,
+        capabilities: vec![],  // TODO: Parse capabilities properly
         args: lines[1..].to_vec(),
     })
 }
@@ -221,34 +243,41 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
 
 fn create_error_response(message: &str) -> HttpResponse {
     let mut data = Vec::new();
-    data.extend(b"0003ERR\n");
-    data.extend(message.as_bytes());
-    data.extend(b"\n0000");
-    create_response(400, "text/plain", &data)
+    
+    // Proper error packet format
+    let error_line = format!("ERR {}\n", message);
+    data.extend(encode_pkt_line(error_line.as_bytes()));
+    data.extend(encode_flush_pkt());
+    
+    create_response(400, "application/x-git-upload-pack-result", &data)
 }
 
 pub fn create_status_response(success: bool, ref_statuses: Vec<String>) -> HttpResponse {
     let mut data = Vec::new();
     
+    // Unpack status
     if success {
-        data.extend(b"0009unpack ok\n");
+        data.extend(encode_pkt_line(b"unpack ok\n"));
     } else {
-        data.extend(b"000cunpack error\n");
+        data.extend(encode_pkt_line(b"unpack failed\n"));
     }
     
+    // Reference statuses
     for status in ref_statuses {
         let line = format!("{}\n", status);
-        let pkt = format!("{:04x}{}", line.len() + 4, line);
-        data.extend(pkt.as_bytes());
+        data.extend(encode_pkt_line(line.as_bytes()));
     }
     
-    data.extend(b"0000");
+    data.extend(encode_flush_pkt());
     create_response(200, "application/x-git-receive-pack-result", &data)
 }
 
-// Packet utilities
+// FIXED: Packet utilities
 fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
-    format!("{:04x}", data.len() + 4).into_bytes()
+    let total_len = data.len() + 4;
+    let mut result = format!("{:04x}", total_len).into_bytes();
+    result.extend_from_slice(data);
+    result
 }
 
 fn encode_flush_pkt() -> Vec<u8> { b"0000".to_vec() }
