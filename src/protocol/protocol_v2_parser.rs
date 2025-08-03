@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_parse_ref_update() {
-        let test_data = b"0066000340e325d1b85b3c0d5d7d8c5d46efad08fcd8 0000000000000000000000000000000000000000 refs/heads/main\n0000PACK...";
+        let test_data = b"00660000000000000000000000000000000000000000 000340e325d1b85b3c0d5d7d8c5d46efad08fcd8 refs/heads/main\n0000PACK...";
         let result = ProtocolV2Parser::parse_receive_pack_request(test_data);
         assert!(result.is_ok());
 
