@@ -65,7 +65,7 @@ fn handle_receive_pack_info_refs_v1(repo_state: &GitRepoState) -> HttpResponse {
     if repo_state.refs.is_empty() {
         // Empty repository - advertise capabilities on the null ref
         let capabilities = "report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git-server/0.1.0";
-        let line = format!("0000000000000000000000000000000000000000 capabilities^{{{}}}\n", capabilities);
+        let line = format!("0000000000000000000000000000000000000000 capabilities^{}\n", capabilities);
         response_data.extend(encode_pkt_line(line.as_bytes()));
     } else {
         // Advertise existing refs with capabilities on the first ref
