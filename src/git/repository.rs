@@ -520,6 +520,14 @@ impl GitRepoState {
                     GitObject::Tag { .. } => "tag",
                 }
             ));
+            // DEBUG: Log raw object details for debugging
+            match &obj {
+                GitObject::Commit { tree, parents, author, committer, message } => {
+                    log(&format!("COMMIT DEBUG - tree: {}, parents: {:?}, author: {}, committer: {}, message: {}", tree, parents, author, committer, message));
+                }
+                _ => {}
+            }
+            
             let hash = crate::utils::hash::calculate_git_hash(&obj);
             log(&format!("Calculated hash: {}", hash));
 
@@ -540,6 +548,9 @@ impl GitRepoState {
             "Added {} new objects to repository",
             new_hashes.len()
         ));
+        
+        // DEBUG: Log all calculated hashes for comparison
+        log(&format!("All calculated hashes: {:?}", new_hashes));
         Ok(new_hashes)
     }
 
@@ -613,8 +624,9 @@ impl GitRepoState {
         ));
 
         // Phase 2: Validate all ref targets exist
-        for (_, _, new_oid) in &ref_updates {
-            log(&format!("Validating new OID {} for ref update", new_oid));
+        for (ref_name, old_oid, new_oid) in &ref_updates {
+            log(&format!("Validating ref update: {} {} -> {}", ref_name, old_oid, new_oid));
+            log(&format!("Available objects: {:?}", self.objects.keys().collect::<Vec<_>>()));
             if !self.objects.contains_key(new_oid) {
                 return Err(format!(
                     "Ref update validation failed: object {} not found",
@@ -744,10 +756,9 @@ pub fn serialize_commit_object(
         content.push_str(&format!("parent {}\n", parent));
     }
 
-    // Use proper Git timestamp format
-    let timestamp = "1609459200 +0000";
-    content.push_str(&format!("author {} {}\n", author, timestamp));
-    content.push_str(&format!("committer {} {}\n", committer, timestamp));
+    // Use the actual author and committer strings as-is (they include timestamps)
+    content.push_str(&format!("author {}\n", author));
+    content.push_str(&format!("committer {}\n", committer));
     content.push('\n');
     content.push_str(message);
 
