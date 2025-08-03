@@ -10,7 +10,7 @@ git add test.txt
 git commit -m "Initial commit"
 
 git remote add wasm http://localhost:8080
-git push wasm master
+GIT_TRACE_PACKET=1 GIT_TRACE=1 GIT_RECEIVE_PACK_DEBUG=1 git push -u wasm main
 
 cd ..
 rm -rf tmp-dir
