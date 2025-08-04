@@ -5,7 +5,7 @@ use crate::bindings::theater::simple::runtime::log;
 use crate::protocol::http::{
     create_error_response, create_response, create_status_response,
     create_status_response_with_capabilities, encode_flush_pkt, encode_pkt_line,
-    encode_sideband_data, serialize_object_for_pack, CAPABILITIES, MAX_SIDEBAND_DATA,
+    encode_sideband_data, CAPABILITIES, MAX_SIDEBAND_DATA,
 };
 use crate::protocol::version_one::{parse_receive_pack_request, PushRequest};
 use crate::protocol::version_two::{parse_command_request, CommandRequest};
@@ -359,7 +359,7 @@ impl GitRepoState {
         for obj_id in object_ids {
             if let Some(obj) = self.objects.get(obj_id) {
                 log(&format!("Processing object: {}", obj));
-                let obj_data = obj.serialize_for_pack()?;
+                let obj_data = obj.to_pack_format()?;
                 pack.extend(&obj_data);
             } else {
                 return Err(format!("Object not found: {}", obj_id));
