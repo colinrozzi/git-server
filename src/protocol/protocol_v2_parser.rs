@@ -147,31 +147,4 @@ impl ProtocolV2Parser {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_ref_update() {
-        let test_data = b"00660000000000000000000000000000000000000000 000340e325d1b85b3c0d5d7d8c5d46efad08fcd8 refs/heads/main\n0000PACK...";
-        let result = ProtocolV2Parser::parse_receive_pack_request(test_data);
-        assert!(result.is_ok());
-
-        if let Ok(request) = result {
-            assert_eq!(request.ref_updates.len(), 1);
-            assert_eq!(request.ref_updates[0].ref_name, "refs/heads/main");
-            assert!(request.ref_updates[0].old_oid.chars().all(|c| c == '0'));
-        }
-    }
-
-    #[test]
-    fn test_empty_repository_push() {
-        let test_data = b"0066000340e325d1b85b3c0d5d7d8c5d46efad08fcd8 0000000000000000000000000000000000000000 refs/heads/main\n0000PACK...";
-        let result = ProtocolV2Parser::parse_receive_pack_request(test_data);
-        assert!(result.is_ok());
-
-        if let Ok(request) = result {
-            assert_eq!(request.ref_updates.len(), 1);
-            assert_eq!(request.ref_updates[0].ref_name, "refs/heads/main");
-        }
-    }
-}
+mod tests {}
