@@ -233,6 +233,7 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
         ("Content-Type".to_string(), content_type.to_string()),
         ("Content-Length".to_string(), body.len().to_string()),
         ("Cache-Control".to_string(), "no-cache".to_string()),
+        ("Connection".to_string(), "close".to_string()),
     ];
     
     HttpResponse {
