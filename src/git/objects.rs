@@ -1,7 +1,9 @@
-use crate::bindings::theater::simple::runtime::log;
 use crate::protocol::http::encode_pack_object_header;
 use crate::utils::compression::compress_zlib;
 use std::fmt::Display;
+
+#[cfg(not(test))]
+use crate::bindings::theater::simple::runtime::log;
 
 use serde::{Deserialize, Serialize};
 
@@ -70,17 +72,17 @@ impl GitObject {
     fn serialize_obj(&self) -> Vec<u8> {
         match self {
             GitObject::Blob { content } => {
-                let mut data = vec![1]; // OBJ_BLOB = 1
-                data.extend_from_slice(content);
-                data
+                // For blobs, the content is stored as-is (no prefixes)
+                content.clone()
             }
             GitObject::Tree { entries } => {
-                let mut data = Vec::new(); // OBJ_TREE = 2
+                let mut data = Vec::new();
                 for entry in entries {
+                    // Git tree format: <mode> <name>\0<20-byte-hash>
                     data.extend(entry.mode.as_bytes());
                     data.push(b' ');
                     data.extend(entry.name.as_bytes());
-                    data.push(0);
+                    data.push(0); // null terminator
                     data.extend_from_slice(
                         &hex::decode(&entry.hash)
                             .map_err(|_| format!("Invalid hash: {}", entry.hash))
@@ -96,22 +98,42 @@ impl GitObject {
                 committer,
                 message,
             } => {
-                let mut data = vec![3]; // OBJ_COMMIT = 3
+                let mut data = Vec::new();
+                
+                // tree line
+                data.extend_from_slice(b"tree ");
                 data.extend_from_slice(tree.as_bytes());
-                for parent in parents {
-                    data.push(b' ');
-                    data.extend_from_slice(parent.as_bytes());
-                }
                 data.push(b'\n');
+                
+                // parent lines (if any)
+                for parent in parents {
+                    data.extend_from_slice(b"parent ");
+                    data.extend_from_slice(parent.as_bytes());
+                    data.push(b'\n');
+                }
+                
+                // author line
+                data.extend_from_slice(b"author ");
                 data.extend_from_slice(author.as_bytes());
                 data.push(b'\n');
+                
+                // committer line
+                data.extend_from_slice(b"committer ");
                 data.extend_from_slice(committer.as_bytes());
                 data.push(b'\n');
+                
+                // blank line before message
+                data.push(b'\n');
+                
+                // commit message
                 data.extend_from_slice(message.as_bytes());
+                
+                #[cfg(not(test))]
                 log(&format!(
                     "serialized commit:\n{}",
-                    String::from_utf8_lossy(&data).as_ref()
+                    String::from_utf8_lossy(&data)
                 ));
+                
                 data
             }
             GitObject::Tag {
@@ -120,13 +142,27 @@ impl GitObject {
                 tagger,
                 message,
             } => {
-                let mut data = vec![4]; // OBJ_TAG = 4
+                let mut data = Vec::new();
+                
+                // object line
+                data.extend_from_slice(b"object ");
                 data.extend_from_slice(object.as_bytes());
-                data.push(b' ');
+                data.push(b'\n');
+                
+                // type line
+                data.extend_from_slice(b"type ");
                 data.extend_from_slice(tag_type.as_bytes());
                 data.push(b'\n');
+                
+                // tagger line
+                data.extend_from_slice(b"tagger ");
                 data.extend_from_slice(tagger.as_bytes());
                 data.push(b'\n');
+                
+                // blank line before message
+                data.push(b'\n');
+                
+                // tag message
                 data.extend_from_slice(message.as_bytes());
                 data
             }
@@ -185,5 +221,53 @@ impl TreeEntry {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_commit_serialization() {
+        let commit = GitObject::Commit {
+            tree: "2b297e643c551e76cfa1f93810c50811382f9117".to_string(),
+            parents: vec![],
+            author: "colin <colinrozzi@gmail.com> 1754330635 -0400".to_string(),
+            committer: "colin <colinrozzi@gmail.com> 1754330635 -0400".to_string(),
+            message: "Initial commit".to_string(),
+        };
+        
+        let serialized = commit.serialize_obj();
+        let as_string = String::from_utf8_lossy(&serialized);
+        
+        println!("Serialized commit:");
+        println!("{}", as_string);
+        
+        // Check that it has the correct format
+        assert!(as_string.starts_with("tree "));
+        assert!(as_string.contains("\nauthor "));
+        assert!(as_string.contains("\ncommitter "));
+        assert!(as_string.contains("\n\nInitial commit"));
+        
+        let expected = "tree 2b297e643c551e76cfa1f93810c50811382f9117\nauthor colin <colinrozzi@gmail.com> 1754330635 -0400\ncommitter colin <colinrozzi@gmail.com> 1754330635 -0400\n\nInitial commit";
+        assert_eq!(as_string, expected);
+    }
+    
+    #[test]
+    fn test_commit_with_parents() {
+        let commit = GitObject::Commit {
+            tree: "abc123".to_string(),
+            parents: vec!["parent1".to_string(), "parent2".to_string()],
+            author: "test <test@example.com> 1234567890 +0000".to_string(),
+            committer: "test <test@example.com> 1234567890 +0000".to_string(),
+            message: "Test commit".to_string(),
+        };
+        
+        let serialized = commit.serialize_obj();
+        let as_string = String::from_utf8_lossy(&serialized);
+        
+        println!("Commit with parents:");
+        println!("{}", as_string);
+        
+        assert!(as_string.contains("parent parent1\n"));
+        assert!(as_string.contains("parent parent2\n"));
+    }
+}
 
