@@ -434,15 +434,15 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
 
             /* ----- 3.  side-band-encode the pack ----- */
             let mut pos = 0;
+            // ----- 3. side-band-encode the pack -----
             while pos < packfile.len() {
-                let chunk_size = std::cmp::min(MAX_SIDEBAND_DATA, packfile.len() - pos); // 65 515
-                let chunk = &packfile[pos..pos + chunk_size];
-                // Pre-pend ASCII '1' (0x31) – channel 1 = data
-                let mut sideband = Vec::with_capacity(1 + chunk.len());
-                sideband.push(b'1');
-                sideband.extend_from_slice(chunk);
-                response.extend(encode_pkt_line(&sideband));
-                pos += chunk_size;
+                // how much of the pack we can send in this side-band frame
+                let chunk_end = std::cmp::min(pos + MAX_SIDEBAND_DATA, packfile.len());
+
+                // helper builds: <4-byte length><0x01><payload>
+                response.extend(encode_sideband_data(1, &packfile[pos..chunk_end]));
+
+                pos = chunk_end;
             }
 
             // End packfile section with flush packet
