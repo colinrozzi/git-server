@@ -226,11 +226,11 @@ impl<'a> PackParser<'a> {
             _ => {
                 // Use the new PackSerializer for consistent deserialization
                 let pack_type = pack_obj.obj_type.to_pack_type();
-                
+
                 // We need to re-compress the data because PackSerializer expects compressed data
                 // In a real implementation, we'd avoid this double compression by refactoring
                 let compressed_data = crate::utils::compression::compress_zlib(&pack_obj.data);
-                
+
                 PackSerializer::deserialize_object(pack_type, &compressed_data)
             }
         }
@@ -252,22 +252,22 @@ pub fn parse_pack_file(data: &[u8]) -> Result<Vec<GitObject>, String> {
 /// Generate a pack file from a collection of Git objects
 pub fn generate_pack_file(objects: &[GitObject]) -> Result<Vec<u8>, String> {
     let mut pack_data = Vec::new();
-    
+
     // Pack header
     pack_data.extend_from_slice(PACK_SIGNATURE);
     pack_data.extend_from_slice(&PACK_VERSION.to_be_bytes());
     pack_data.extend_from_slice(&(objects.len() as u32).to_be_bytes());
-    
+
     // Pack objects using new serialization architecture
     for obj in objects {
         let obj_data = obj.to_pack_format()?;
         pack_data.extend(obj_data);
     }
-    
+
     // TODO: Add SHA-1 checksum of pack data
     // For now, add dummy checksum (20 zero bytes)
     pack_data.extend_from_slice(&[0u8; 20]);
-    
+
     Ok(pack_data)
 }
 
@@ -342,7 +342,7 @@ mod tests {
 
         // Test that hash is consistent between formats
         let hash1 = original.compute_hash();
-        
+
         // Test loose format round trip
         let loose_data = original.to_loose_format();
         let from_loose = GitObject::from_loose_format(&loose_data).unwrap();
