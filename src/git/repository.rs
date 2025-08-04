@@ -181,12 +181,28 @@ impl GitRepoState {
     }
 
     fn handle_v1_push(&mut self, push: PushRequest) -> HttpResponse {
-        log("Processing Protocol v1 push operation");
+        log("=== DEBUGGING V1 PUSH OPERATION ===");
+        log(&format!("Push has {} ref updates", push.ref_updates.len()));
+        log(&format!("Push has {} bytes of pack data", push.pack_data.len()));
+        log(&format!("Push capabilities: {:?}", push.capabilities));
+        
+        for (i, (ref_name, old_oid, new_oid)) in push.ref_updates.iter().enumerate() {
+            log(&format!("Ref update {}: {} {} -> {}", i, ref_name, old_oid, new_oid));
+        }
+        
+        if !push.pack_data.is_empty() {
+            if push.pack_data.starts_with(b"PACK") {
+                log("✅ Pack data has valid PACK signature");
+            } else {
+                log(&format!("❌ Pack data invalid signature: {:?}", &push.pack_data[..4.min(push.pack_data.len())]));
+            }
+        }
 
         if push.ref_updates.is_empty() && push.pack_data.is_empty() {
             return create_status_response_with_capabilities(true, vec![], &push.capabilities);
         }
 
+        log("Starting process_push_operation...");
         match self.process_push_operation(&push.pack_data, push.ref_updates) {
             Ok(statuses) => {
                 log("Push operation successful, processing statuses");
@@ -204,11 +220,14 @@ impl GitRepoState {
                     .collect();
                 create_status_response_with_capabilities(true, ref_statuses, &push.capabilities)
             }
-            Err(e) => create_status_response_with_capabilities(
-                false,
-                vec![format!("unpack {}", e)],
-                &push.capabilities,
-            ),
+            Err(e) => {
+                log(&format!("❌ Push operation failed with error: {}", e));
+                create_status_response_with_capabilities(
+                    false,
+                    vec![format!("unpack {}", e)],
+                    &push.capabilities,
+                )
+            }
         }
     }
 
@@ -677,7 +696,17 @@ impl GitRepoState {
         log("Processing complete push operation");
 
         // Phase 1: Parse and store pack file objects
-        let new_hashes = self.process_pack_file(pack_data)?;
+        log(&format!("About to process pack file with {} bytes", pack_data.len()));
+        let new_hashes = match self.process_pack_file(pack_data) {
+            Ok(hashes) => {
+                log(&format!("✅ Successfully processed pack file, got {} new objects", hashes.len()));
+                hashes
+            },
+            Err(e) => {
+                log(&format!("❌ Pack file processing failed: {}", e)); 
+                return Err(format!("pack processing failed: {}", e));
+            }
+        };
 
         log(&format!(
             "Processed {} new objects from pack file",
