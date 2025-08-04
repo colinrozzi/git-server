@@ -8,11 +8,9 @@
 //! Key insight: Both formats use identical content serialization to ensure
 //! consistent SHA-1 hashes across different storage formats.
 
+use crate::bindings::theater::simple::runtime::log;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-
-#[cfg(not(test))]
-use crate::bindings::theater::simple::runtime::log;
 
 // ============================================================================
 // Pure Data Model - No Serialization Logic
@@ -71,7 +69,7 @@ impl GitObject {
 
     /// Compute SHA-1 hash of this object (using loose format)
     pub fn compute_hash(&self) -> String {
-        use sha1::{Sha1, Digest};
+        use sha1::{Digest, Sha1};
 
         let loose_data = LooseObjectSerializer::serialize(self);
         let mut hasher = Sha1::new();
@@ -176,8 +174,8 @@ impl LooseObjectSerializer {
             .position(|&b| b == 0)
             .ok_or("Invalid loose object: missing null terminator")?;
 
-        let header = std::str::from_utf8(&data[..null_pos])
-            .map_err(|_| "Invalid UTF-8 in object header")?;
+        let header =
+            std::str::from_utf8(&data[..null_pos]).map_err(|_| "Invalid UTF-8 in object header")?;
 
         let content = &data[null_pos + 1..];
 
@@ -219,8 +217,9 @@ impl LooseObjectSerializer {
                     data.push(0); // null terminator
 
                     // Convert hex hash to binary
-                    let hash_bytes = hex::decode(&entry.hash)
-                        .unwrap_or_else(|_| panic!("Invalid hex hash in tree entry: {}", entry.hash));
+                    let hash_bytes = hex::decode(&entry.hash).unwrap_or_else(|_| {
+                        panic!("Invalid hex hash in tree entry: {}", entry.hash)
+                    });
                     data.extend_from_slice(&hash_bytes);
                 }
                 data
@@ -547,12 +546,12 @@ mod tests {
 
         // Both loose and pack should use same content serialization
         let loose_content = LooseObjectSerializer::serialize_content(&obj);
-        
+
         // Simulate what pack serialization does internally
         let _pack_bytes = obj.to_pack_format().unwrap();
-        // (We'd need to parse the pack header and decompress to verify, 
+        // (We'd need to parse the pack header and decompress to verify,
         //  but the key is they both call serialize_content())
-        
+
         // Verify the content format matches expected Git format
         let content_str = std::str::from_utf8(&loose_content).unwrap();
         assert!(content_str.starts_with("tree "));
@@ -563,11 +562,19 @@ mod tests {
 
     #[test]
     fn test_tree_round_trip() {
-        let original = GitObject::Tree { 
+        let original = GitObject::Tree {
             entries: vec![
-                TreeEntry::new("100644".to_string(), "file.txt".to_string(), "abc123def4567890123456789012345678901234".to_string()),
-                TreeEntry::new("100755".to_string(), "script.sh".to_string(), "fedcba6543210987654321098765432109876543".to_string()),
-            ]
+                TreeEntry::new(
+                    "100644".to_string(),
+                    "file.txt".to_string(),
+                    "abc123def4567890123456789012345678901234".to_string(),
+                ),
+                TreeEntry::new(
+                    "100755".to_string(),
+                    "script.sh".to_string(),
+                    "fedcba6543210987654321098765432109876543".to_string(),
+                ),
+            ],
         };
 
         let serialized = LooseObjectSerializer::serialize(&original);
