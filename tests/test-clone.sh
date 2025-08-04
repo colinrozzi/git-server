@@ -16,5 +16,13 @@ cd ..
 
 GIT_TRACE_PACKET=1 GIT_TRACE_CURL=1 git clone http://localhost:8080 tmp-clone
 
+echo "Contents of tmp-clone:"
+ls -la tmp-clone
+echo " ";
+
+echo "Contents of tmp-dir:"
+ls -la tmp-dir
+echo " ";
+
 rm -rf tmp-dir
 rm -rf tmp-clone
