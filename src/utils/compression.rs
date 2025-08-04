@@ -24,6 +24,7 @@ pub fn compress_zlib(data: &[u8]) -> Vec<u8> {
 /// 
 /// Decompresses zlib-compressed data (RFC 1950) as used in Git loose objects.
 /// Uses the same high-performance flate2 library with zlib-rs backend.
+#[allow(dead_code)]
 pub fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let mut decoder = ZlibDecoder::new(data);
     let mut result = Vec::new();
@@ -35,6 +36,7 @@ pub fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
 /// 
 /// Note: flate2 handles checksums internally, but we keep this function
 /// for any external code that might need Adler-32 calculation
+#[allow(dead_code)]
 pub fn calculate_adler32(data: &[u8]) -> u32 {
     const ADLER32_BASE: u32 = 65521;
     

@@ -7,6 +7,7 @@ use crate::bindings::theater::simple::runtime::log;
 use crate::git::repository::GitRepoState;
 
 /// Structure to hold ref updates from push
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RefUpdate {
     pub ref_name: String,
@@ -15,6 +16,7 @@ pub struct RefUpdate {
 }
 
 /// Complete Protocol v2 push request
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct PushRequest {
     pub ref_updates: Vec<RefUpdate>,
@@ -23,10 +25,12 @@ pub struct PushRequest {
 }
 
 /// Protocol v2 parser for receive-pack binary format
+#[allow(dead_code)]
 pub struct ProtocolV2Parser;
 
 impl ProtocolV2Parser {
     /// Parse complete Protocol v2 receive-pack request
+    #[allow(dead_code)]
     pub fn parse_receive_pack_request(data: &[u8]) -> Result<PushRequest, String> {
         log("Parsing Protocol v2 receive-pack request");
 
@@ -35,7 +39,7 @@ impl ProtocolV2Parser {
         }
 
         let mut cursor = 0;
-        let mut capabilities = Vec::new();
+        let capabilities = Vec::new();
         let mut ref_updates = Vec::new();
 
         // Phase 1: Parse packet-lines until PACK header
@@ -121,6 +125,7 @@ impl ProtocolV2Parser {
     }
 
     /// Helper to validate push requirements
+    #[allow(dead_code)]
     pub fn validate_push_request(
         ref_updates: &[RefUpdate],
         repo_state: &GitRepoState,

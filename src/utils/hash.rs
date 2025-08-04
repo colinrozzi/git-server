@@ -9,6 +9,7 @@ pub fn sha1_hash(data: &[u8]) -> [u8; 20] {
 }
 
 /// Calculate SHA-1 hash and return as hex string
+#[allow(dead_code)]
 pub fn sha1_hex(data: &[u8]) -> String {
     let hash_bytes = sha1_hash(data);
     hex::encode(hash_bytes)

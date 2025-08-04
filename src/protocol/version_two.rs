@@ -3,6 +3,7 @@ use crate::bindings::theater::simple::runtime::log;
 #[derive(Debug)]
 pub struct CommandRequest {
     pub command: String,
+    #[allow(dead_code)]
     pub capabilities: Vec<String>,
     pub args: Vec<String>,
 }
@@ -27,7 +28,7 @@ pub fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
 
         if len == 0 {
             // Flush packet - end of request
-            pos += 4;
+            // pos += 4; // Unused assignment removed
             break;
         }
 

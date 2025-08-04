@@ -3,7 +3,7 @@
 
 use crate::bindings::theater::simple::http_types::HttpResponse;
 use crate::bindings::theater::simple::runtime::log;
-use crate::git::repository::GitRepoState;
+
 
 pub const CAPABILITIES: &str = "report-status delete-refs ofs-delta agent=git-server/0.1.0";
 pub const MAX_PKT_PAYLOAD: usize = 0xFFF0 - 4; // pkt-line payload limit = 65 516
@@ -55,12 +55,10 @@ pub fn create_status_response_with_capabilities(
         } else {
             data.extend(encode_pkt_line(b"unpack ok\n"));
         }
+    } else if use_sideband {
+        data.extend(encode_status_message(b"unpack failed\n"));
     } else {
-        if use_sideband {
-            data.extend(encode_status_message(b"unpack failed\n"));
-        } else {
-            data.extend(encode_pkt_line(b"unpack failed\n"));
-        }
+        data.extend(encode_pkt_line(b"unpack failed\n"));
     }
 
     // Reference statuses
@@ -77,150 +75,6 @@ pub fn create_status_response_with_capabilities(
     create_response(200, "application/x-git-receive-pack-result", &data)
 }
 
-// ============================================================================
-// PACKFILE GENERATION FOR FETCH
-// ============================================================================
-
-fn generate_packfile_for_wants(
-    repo_state: &GitRepoState,
-    wants: &[String],
-) -> Result<Vec<u8>, String> {
-    log(&format!("Generating packfile for {} wants", wants.len()));
-
-    // Collect all objects needed for the wants
-    let objects_to_send = collect_objects_for_wants(repo_state, wants)?;
-    log(&format!("Collected objects: {:?}", objects_to_send));
-
-    // Generate the packfile
-    generate_simple_packfile(repo_state, &objects_to_send)
-}
-
-fn collect_objects_for_wants(
-    repo_state: &GitRepoState,
-    wants: &[String],
-) -> Result<Vec<String>, String> {
-    use std::collections::HashSet;
-    let mut objects = HashSet::new();
-
-    for want_hash in wants {
-        // Add the wanted object itself
-        objects.insert(want_hash.clone());
-
-        // If it's a commit, traverse to get tree + blobs
-        if let Some(obj) = repo_state.objects.get(want_hash) {
-            match obj {
-                crate::git::objects::GitObject::Commit { tree, parents, .. } => {
-                    // Add the tree
-                    objects.insert(tree.clone());
-
-                    // Add all objects in the tree
-                    collect_tree_objects(repo_state, tree, &mut objects)?;
-
-                    // Add parent commits recursively
-                    for parent_hash in parents {
-                        collect_commit_ancestors(repo_state, parent_hash, &mut objects)?;
-                    }
-                }
-                crate::git::objects::GitObject::Tree { .. } => {
-                    // If want is a tree, collect all its objects
-                    collect_tree_objects(repo_state, want_hash, &mut objects)?;
-                }
-                _ => {
-                    // Blob or tag, just include it
-                }
-            }
-        } else {
-            return Err(format!("Wanted object not found: {}", want_hash));
-        }
-    }
-
-    Ok(objects.into_iter().collect())
-}
-
-fn collect_tree_objects(
-    repo_state: &GitRepoState,
-    tree_hash: &str,
-    objects: &mut std::collections::HashSet<String>,
-) -> Result<(), String> {
-    if let Some(crate::git::objects::GitObject::Tree { entries }) =
-        repo_state.objects.get(tree_hash)
-    {
-        for entry in entries {
-            objects.insert(entry.hash.clone());
-
-            // If this entry is also a tree, recurse
-            if entry.mode == "040000" {
-                // Directory mode
-                collect_tree_objects(repo_state, &entry.hash, objects)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn collect_commit_ancestors(
-    repo_state: &GitRepoState,
-    commit_hash: &str,
-    objects: &mut std::collections::HashSet<String>,
-) -> Result<(), String> {
-    if objects.contains(commit_hash) {
-        return Ok(()); // Already processed
-    }
-
-    objects.insert(commit_hash.to_string());
-
-    if let Some(crate::git::objects::GitObject::Commit { tree, parents, .. }) =
-        repo_state.objects.get(commit_hash)
-    {
-        // Add the tree and its contents
-        objects.insert(tree.clone());
-        collect_tree_objects(repo_state, tree, objects)?;
-
-        // Recurse to parents
-        for parent_hash in parents {
-            collect_commit_ancestors(repo_state, parent_hash, objects)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn generate_simple_packfile(
-    repo_state: &GitRepoState,
-    object_ids: &[String],
-) -> Result<Vec<u8>, String> {
-    use crate::utils::hash::sha1_hash;
-
-    let mut pack = Vec::new();
-
-    // Pack header: "PACK" + version(2) + object_count
-    pack.extend(b"PACK");
-    pack.extend(&2u32.to_be_bytes()); // version 2
-    pack.extend(&(object_ids.len() as u32).to_be_bytes());
-
-    log(&format!(
-        "Pack header: version=2, objects={}",
-        object_ids.len()
-    ));
-
-    // Add each object
-    for obj_id in object_ids {
-        if let Some(obj) = repo_state.objects.get(obj_id) {
-            log(&format!("Processing object: {}", obj));
-            let obj_data = serialize_object_for_pack(obj)?;
-            pack.extend(&obj_data);
-        } else {
-            return Err(format!("Object not found: {}", obj_id));
-        }
-    }
-
-    // Pack checksum (SHA1 of entire pack so far)
-    let checksum = sha1_hash(&pack);
-    pack.extend(&checksum);
-
-    log(&format!("Generated packfile: {:?}", pack));
-    Ok(pack)
-}
 
 pub fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec<u8>, String> {
     use crate::utils::compression::compress_zlib;
@@ -372,9 +226,6 @@ pub fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn encode_progress_message(message: &[u8]) -> Vec<u8> {
-    encode_sideband_data(2, message) // Band 2 = progress/status messages
-}
 
 pub fn encode_status_message(message: &[u8]) -> Vec<u8> {
     encode_sideband_data(1, message) // Band 1 = status messages

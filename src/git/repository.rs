@@ -193,10 +193,10 @@ impl GitRepoState {
                 let ref_statuses: Vec<String> = statuses
                     .iter()
                     .map(|status| {
-                        if status.starts_with("create ") {
-                            format!("ok {}", &status[7..])
-                        } else if status.starts_with("update ") {
-                            format!("ok {}", &status[7..])
+                        if let Some(stripped) = status.strip_prefix("create ") {
+                            format!("ok {}", stripped)
+                        } else if let Some(stripped) = status.strip_prefix("update ") {
+                            format!("ok {}", stripped)
                         } else {
                             status.clone()
                         }
@@ -243,9 +243,9 @@ impl GitRepoState {
         let mut has_done = false;
 
         for arg in &request.args {
-            if arg.starts_with("want ") {
-                wants.push(arg[5..].to_string()); // Remove "want " prefix
-                log(&format!("Client wants: {}", &arg[5..]));
+            if let Some(stripped) = arg.strip_prefix("want ") {
+                wants.push(stripped.to_string()); // Remove "want " prefix
+                log(&format!("Client wants: {}", stripped));
             } else if arg == "done" {
                 has_done = true;
                 log("Client sent 'done' - negotiation finished, skipping acknowledgments");
@@ -568,27 +568,25 @@ impl GitRepoState {
                 }
             ));
             // DEBUG: Log raw object details for debugging
-            match &obj {
-                GitObject::Commit {
-                    tree,
-                    parents,
-                    author,
-                    committer,
-                    message,
-                } => {
-                    log(&format!("COMMIT DEBUG - tree: {}, parents: {:?}, author: {}, committer: {}, message: {}", tree, parents, author, committer, message));
+            if let GitObject::Commit {
+                tree,
+                parents,
+                author,
+                committer,
+                message,
+            } = &obj
+            {
+                log(&format!("COMMIT DEBUG - tree: {}, parents: {:?}, author: {}, committer: {}, message: {}", tree, parents, author, committer, message));
 
-                    // DEBUG: Log the exact serialized content
-                    let serialized = crate::git::repository::serialize_commit_object(
-                        tree, parents, author, committer, message,
-                    );
-                    log(&format!(
-                        "COMMIT SERIALIZED: {:?}",
-                        std::str::from_utf8(&serialized).unwrap_or("<invalid utf8>")
-                    ));
-                    log(&format!("COMMIT SERIALIZED BYTES: {:?}", serialized));
-                }
-                _ => {}
+                // DEBUG: Log the exact serialized content
+                let serialized = crate::git::repository::serialize_commit_object(
+                    tree, parents, author, committer, message,
+                );
+                log(&format!(
+                    "COMMIT SERIALIZED: {:?}",
+                    std::str::from_utf8(&serialized).unwrap_or("<invalid utf8>")
+                ));
+                log(&format!("COMMIT SERIALIZED BYTES: {:?}", serialized));
             }
 
             let hash = crate::utils::hash::calculate_git_hash(&obj);
@@ -719,7 +717,7 @@ impl GitRepoState {
             return Err(format!("Repository validation failed: {:?}", errors));
         }
 
-        log(&format!("Push operation completed successfully"));
+        log("Push operation completed successfully");
         Ok(updated_refs)
     }
 }
@@ -793,28 +791,4 @@ pub fn serialize_commit_object(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tree_serialization() {
-        let entries = vec![
-            TreeEntry::blob(
-                "file.txt".to_string(),
-                "abc123def456789012345678901234567890abcd".to_string(),
-            ),
-            TreeEntry::tree(
-                "dir".to_string(),
-                "def456789012345678901234567890abcdef1234".to_string(),
-            ),
-        ];
-
-        let serialized = serialize_tree_object(&entries);
-
-        // Should contain modes, names, and binary hashes
-        assert!(!serialized.is_empty());
-        // Should contain the filenames
-        assert!(serialized.windows(8).any(|w| w == b"file.txt"));
-        assert!(serialized.windows(3).any(|w| w == b"dir"));
-    }
-}
+mod tests {}

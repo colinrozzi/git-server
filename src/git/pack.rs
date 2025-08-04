@@ -36,6 +36,7 @@ impl ObjectType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             ObjectType::Commit => "commit",
@@ -53,7 +54,9 @@ impl ObjectType {
 pub struct PackObject {
     pub obj_type: ObjectType,
     pub data: Vec<u8>,
+    #[allow(dead_code)]
     pub base_offset: Option<u64>, // For delta objects
+    #[allow(dead_code)]
     pub ref_hash: Option<String>, // For ref-delta objects
 }
 
@@ -61,6 +64,7 @@ pub struct PackObject {
 pub struct PackParser<'a> {
     data: &'a [u8],
     offset: usize,
+    #[allow(dead_code)]
     objects: Vec<PackObject>,
 }
 
@@ -146,7 +150,7 @@ impl<'a> PackParser<'a> {
             return Err("Unexpected end of pack file".to_string());
         }
 
-        let (obj_type, size) = self.parse_object_header()?;
+        let (obj_type, _size) = self.parse_object_header()?;
 
         // Read compressed data
         let compressed_data = &self.data[self.offset..];
@@ -375,7 +379,6 @@ pub fn parse_pack_file(data: &[u8]) -> Result<Vec<GitObject>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::objects::TreeEntry;
 
     #[test]
     fn test_object_type_from_pack() {
@@ -406,3 +409,4 @@ mod tests {
         );
     }
 }
+
