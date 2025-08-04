@@ -22,6 +22,10 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
     }
 }
 
+pub fn not_found() -> HttpResponse {
+    create_response(404, "text/plain", b"Not Found")
+}
+
 pub fn create_error_response(message: &str) -> HttpResponse {
     let mut data = Vec::new();
     let error_line = format!("ERR {}\n", message);

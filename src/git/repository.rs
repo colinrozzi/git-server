@@ -5,7 +5,7 @@ use crate::protocol::command_request::{parse_command_request, CommandRequest};
 use crate::protocol::http::{
     create_error_response, create_response, create_status_response,
     create_status_response_with_capabilities, encode_flush_pkt, encode_pkt_line,
-    encode_sideband_data, CAPABILITIES, MAX_SIDEBAND_DATA,
+    encode_sideband_data, not_found, CAPABILITIES, MAX_SIDEBAND_DATA,
 };
 use crate::protocol::push_request::{parse_receive_pack_request, PushRequest};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,94 @@ impl Default for GitRepoState {
 }
 
 impl GitRepoState {
+    pub fn dispatch(&mut self, request: &HttpRequest) -> HttpResponse {
+        // Route based on path - Protocol v2 only!
+        // Parse the URI to get path and query
+        let uri_parts: Vec<&str> = request.uri.splitn(2, '?').collect();
+        let path = uri_parts[0];
+        let query = if uri_parts.len() > 1 {
+            Some(uri_parts[1].to_string())
+        } else {
+            None
+        };
+
+        match path {
+            "/" => self.debug_home(),
+            "/refs" => self.debug_refs(),
+            "/objects" => self.debug_objects(),
+            "/info/refs" => self.advertise_refs(request, &query),
+            "/git-upload-pack" => self.upload_pack(request),
+            "/git-receive-pack" => self.receive_pack(request),
+            _ => not_found(),
+        }
+    }
+
+    /// Handle GET / - Debug home page
+    pub fn debug_home(&self) -> HttpResponse {
+        log("Handling debug home page request");
+        let body = format!(
+            "<html><body><h1>Git Server Debug Home</h1>\
+             <p>Repository: {}</p>\
+             <p>Refs: {}</p>\
+             <p>Objects: {}</p>\
+             </body></html>",
+            self.repo_name,
+            self.refs.len(),
+            self.objects.len()
+        );
+        create_response(200, "text/html", body.as_bytes())
+    }
+
+    /// Handle GET /refs - Debug refs
+    pub fn debug_refs(&self) -> HttpResponse {
+        // Modern refs debug endpoint
+        let mut refs_info = String::new();
+
+        for (ref_name, hash) in &self.refs {
+            refs_info.push_str(&format!("{} : {}\n", ref_name, hash));
+        }
+
+        create_response(200, "text/plain", refs_info.as_bytes())
+    }
+
+    /// Handle GET /objects - Debug objects
+    pub fn debug_objects(&self) -> HttpResponse {
+        // Modern objects debug endpoint
+        let mut objects_info = String::new();
+
+        for (hash, obj) in &self.objects {
+            objects_info.push_str(&format!("{} : {}\n", hash, obj.object_type()));
+        }
+
+        create_response(200, "text/plain", objects_info.as_bytes())
+    }
+
+    pub fn advertise_refs(
+        &mut self,
+        request: &HttpRequest,
+        query: &Option<String>,
+    ) -> HttpResponse {
+        log("Handling advertise refs request");
+
+        // Extract service from query parameters
+        let service = match query {
+            Some(q) => {
+                if let Some(service) = q.strip_prefix("service=") {
+                    service.to_string()
+                } else {
+                    log("No service specified in query, returning error");
+                    return create_error_response("Missing service parameter");
+                }
+            }
+            None => {
+                log("No query parameters found, returning error");
+                return create_error_response("Missing service parameter");
+            }
+        };
+
+        self.handle_smart_info_refs(&service)
+    }
+
     /// Handle GET /info/refs - Support both Protocol v1 and v2
     pub fn handle_smart_info_refs(&mut self, service: &str) -> HttpResponse {
         log(&format!(
@@ -136,7 +224,7 @@ impl GitRepoState {
         )
     }
 
-    pub fn handle_receive_pack_request(&mut self, request: &HttpRequest) -> HttpResponse {
+    pub fn receive_pack(&mut self, request: &HttpRequest) -> HttpResponse {
         log("handle_receive_pack");
 
         let body = match &request.body {
@@ -157,7 +245,7 @@ impl GitRepoState {
         }
     }
 
-    pub fn handle_upload_pack_request(&mut self, request: &HttpRequest) -> HttpResponse {
+    pub fn upload_pack(&mut self, request: &HttpRequest) -> HttpResponse {
         log("handle_upload_pack");
 
         log("Processing Protocol v2 upload-pack request");
