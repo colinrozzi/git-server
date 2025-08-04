@@ -2,8 +2,12 @@
 //!
 //! This module handles packing and unpacking of Git objects
 //! for efficient transfer over the wire protocol.
+//!
+//! REFACTORED: Now uses the new serialization architecture where
+//! both loose and pack formats share the same content serialization
+//! to ensure consistent SHA-1 hashes.
 
-use super::objects::{GitObject, TreeEntry};
+use super::objects::{GitObject, PackSerializer};
 use crate::bindings::theater::simple::runtime::log;
 use flate2::read::ZlibDecoder;
 use std::io::Read;
@@ -36,6 +40,17 @@ impl ObjectType {
         }
     }
 
+    pub fn to_pack_type(&self) -> u8 {
+        match self {
+            ObjectType::Commit => 1,
+            ObjectType::Tree => 2,
+            ObjectType::Blob => 3,
+            ObjectType::Tag => 4,
+            ObjectType::OfDelta => 6,
+            ObjectType::RefDelta => 7,
+        }
+    }
+
     #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -49,7 +64,7 @@ impl ObjectType {
     }
 }
 
-/// Parsed Git object from pack file
+/// Parsed Git object from pack file (intermediate representation)
 #[derive(Debug, Clone)]
 pub struct PackObject {
     pub obj_type: ObjectType,
@@ -90,7 +105,7 @@ impl<'a> PackParser<'a> {
         for _ in 0..object_count {
             let pack_obj = self.parse_object()?;
 
-            // Convert PackObject to GitObject
+            // Convert PackObject to GitObject using new architecture
             let git_obj = self.convert_pack_object(pack_obj)?;
             objects.push(git_obj);
         }
@@ -140,7 +155,7 @@ impl<'a> PackParser<'a> {
             self.data[self.offset + 3],
         ]);
 
-        self.offset += 4; // ⬅️  advance past the object-count field
+        self.offset += 4; // advance past the object-count field
         Ok(count)
     }
 
@@ -202,170 +217,27 @@ impl<'a> PackParser<'a> {
         Ok((obj_type, size))
     }
 
-    /// Convert PackObject to GitObject
+    /// Convert PackObject to GitObject using new architecture
     fn convert_pack_object(&self, pack_obj: PackObject) -> Result<GitObject, String> {
-        let data = &pack_obj.data;
-
         match pack_obj.obj_type {
-            ObjectType::Commit => self.parse_commit_objects(data),
-            ObjectType::Tree => self.parse_tree_object(data),
-            ObjectType::Blob => Ok(GitObject::Blob {
-                content: data.to_vec(),
-            }),
-            ObjectType::Tag => {
-                // Parse tag object (simple implementation)
-                let content_str =
-                    std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in tag object")?;
-
-                let object = self
-                    .extract_commit_field(content_str, "object")
-                    .unwrap_or_else(|| "unknown".to_string());
-                let tag_type = self
-                    .extract_commit_field(content_str, "type")
-                    .unwrap_or_else(|| "commit".to_string());
-                let tagger = self
-                    .extract_commit_field(content_str, "tagger")
-                    .unwrap_or_else(|| "unknown".to_string());
-                let message = self
-                    .extract_commit_field(content_str, "")
-                    .unwrap_or_else(|| content_str.to_string());
-
-                Ok(GitObject::Tag {
-                    object,
-                    tag_type,
-                    tagger,
-                    message,
-                })
-            }
             ObjectType::OfDelta | ObjectType::RefDelta => {
                 Err("Delta objects not supported in basic implementation".to_string())
             }
+            _ => {
+                // Use the new PackSerializer for consistent deserialization
+                let pack_type = pack_obj.obj_type.to_pack_type();
+                
+                // We need to re-compress the data because PackSerializer expects compressed data
+                // In a real implementation, we'd avoid this double compression by refactoring
+                let compressed_data = crate::utils::compression::compress_zlib(&pack_obj.data);
+                
+                PackSerializer::deserialize_object(pack_type, &compressed_data)
+            }
         }
-    }
-
-    /// Parse commit object
-    fn parse_commit_objects(&self, data: &[u8]) -> Result<GitObject, String> {
-        let content_str =
-            std::str::from_utf8(data).map_err(|_| "Invalid UTF-8 in commit object")?;
-
-        let tree = self
-            .extract_commit_field(content_str, "tree")
-            .ok_or("Missing tree in commit")?;
-
-        let parents = self.extract_all_commit_fields(content_str, "parent");
-
-        let author = self
-            .extract_commit_field(content_str, "author")
-            .unwrap_or_else(|| "unknown author".to_string());
-
-        let committer = self
-            .extract_commit_field(content_str, "committer")
-            .unwrap_or_else(|| "unknown committer".to_string());
-
-        let message = self
-            .extract_commit_field(content_str, "")
-            .unwrap_or_else(|| content_str.to_string());
-
-        Ok(GitObject::Commit {
-            tree,
-            parents,
-            author,
-            committer,
-            message,
-        })
-    }
-
-    /// Parse tree object
-    fn parse_tree_object(&self, data: &[u8]) -> Result<GitObject, String> {
-        let mut entries = Vec::new();
-        let mut pos = 0;
-
-        while pos < data.len() {
-            if pos + 1 >= data.len() {
-                return Err("Truncated tree object".to_string());
-            }
-
-            // Parse mode (up to space)
-            let space_pos = data[pos..].iter().position(|&b| b == b' ');
-            let Some(space_pos) = space_pos else {
-                return Err("Malformed tree entry".to_string());
-            };
-
-            let mode = std::str::from_utf8(&data[pos..pos + space_pos])
-                .map_err(|_| "Invalid mode in tree")?;
-
-            pos += space_pos + 1;
-
-            if pos >= data.len() {
-                return Err("Truncated tree entry".to_string());
-            }
-
-            // Parse name (up to null terminator)
-            let null_pos = data[pos..].iter().position(|&b| b == b'\0');
-            let Some(null_pos) = null_pos else {
-                return Err("Malformed tree entry: missing null terminator".to_string());
-            };
-
-            let name = std::str::from_utf8(&data[pos..pos + null_pos])
-                .map_err(|_| "Invalid name in tree")?;
-
-            pos += null_pos + 1;
-
-            if pos + 20 > data.len() {
-                return Err("Truncated tree entry: missing sha1".to_string());
-            }
-
-            // Parse SHA-1 (20 bytes)
-            let mut hash_bytes = [0u8; 20];
-            hash_bytes.copy_from_slice(&data[pos..pos + 20]);
-            pos += 20;
-
-            // Convert binary to hex string
-            let hash = hex::encode(hash_bytes);
-
-            entries.push(TreeEntry::new(mode.to_string(), name.to_string(), hash));
-        }
-
-        Ok(GitObject::Tree { entries })
-    }
-
-    /// Helper to extract fields from commit message
-    fn extract_commit_field(&self, content: &str, field: &str) -> Option<String> {
-        if field.is_empty() {
-            // Return message after headers
-            if let Some(double_newline_idx) = content.find("\n\n") {
-                let message = &content[double_newline_idx + 2..];
-                // DON'T trim the message - preserve trailing newlines for correct SHA-1
-                return Some(message.to_string());
-            }
-            return Some(content.to_string());
-        }
-
-        let prefix = format!("{} ", field);
-        content
-            .lines()
-            .find(|line| line.starts_with(&prefix))
-            .map(|line| line[prefix.len()..].trim().to_string())
-    }
-
-    /// Extract all occurrences of a commit field (like parent)
-    fn extract_all_commit_fields(&self, content: &str, field: &str) -> Vec<String> {
-        let prefix = format!("{} ", field);
-        content
-            .lines()
-            .filter_map(|line| {
-                if line.starts_with(&prefix) {
-                    Some(line[prefix.len()..].trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     /// Verify pack file checksum
     fn verify_checksum(&mut self) -> Result<(), String> {
-        // Skip checksum validation for now - focus on core functionality
         // Skip checksum validation for now - focus on core functionality
         Ok(())
     }
@@ -375,6 +247,59 @@ impl<'a> PackParser<'a> {
 pub fn parse_pack_file(data: &[u8]) -> Result<Vec<GitObject>, String> {
     let mut parser = PackParser::new(data);
     parser.parse()
+}
+
+/// Generate a pack file from a collection of Git objects
+pub fn generate_pack_file(objects: &[GitObject]) -> Result<Vec<u8>, String> {
+    let mut pack_data = Vec::new();
+    
+    // Pack header
+    pack_data.extend_from_slice(PACK_SIGNATURE);
+    pack_data.extend_from_slice(&PACK_VERSION.to_be_bytes());
+    pack_data.extend_from_slice(&(objects.len() as u32).to_be_bytes());
+    
+    // Pack objects using new serialization architecture
+    for obj in objects {
+        let obj_data = obj.to_pack_format()?;
+        pack_data.extend(obj_data);
+    }
+    
+    // TODO: Add SHA-1 checksum of pack data
+    // For now, add dummy checksum (20 zero bytes)
+    pack_data.extend_from_slice(&[0u8; 20]);
+    
+    Ok(pack_data)
+}
+
+/// Pack file generator for streaming large object sets
+pub struct PackGenerator {
+    objects: Vec<GitObject>,
+}
+
+impl PackGenerator {
+    pub fn new() -> Self {
+        Self {
+            objects: Vec::new(),
+        }
+    }
+
+    pub fn add_object(&mut self, obj: GitObject) {
+        self.objects.push(obj);
+    }
+
+    pub fn generate(&self) -> Result<Vec<u8>, String> {
+        generate_pack_file(&self.objects)
+    }
+
+    pub fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+}
+
+impl Default for PackGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -390,24 +315,41 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_commit_field() {
-        let commit_content =
-            b"tree abc123\nparent def456\nauthor someone\ncommitter nobody\n\nInitial commit\n";
-        let parser = PackParser::new(&[]);
-        let commit_str = std::str::from_utf8(commit_content).unwrap();
+    fn test_pack_generation() {
+        let obj = GitObject::Blob {
+            content: b"hello world".to_vec(),
+        };
 
-        assert_eq!(
-            parser.extract_commit_field(commit_str, "tree"),
-            Some("abc123".to_string())
-        );
-        assert_eq!(
-            parser.extract_commit_field(commit_str, "parent"),
-            Some("def456".to_string())
-        );
-        assert_eq!(
-            parser.extract_all_commit_fields(commit_str, "parent"),
-            vec!["def456"]
-        );
+        let mut generator = PackGenerator::new();
+        generator.add_object(obj);
+
+        let pack_data = generator.generate().unwrap();
+
+        // Should have pack header (12 bytes) + object data + checksum (20 bytes)
+        assert!(pack_data.len() > 32);
+        assert_eq!(&pack_data[0..4], PACK_SIGNATURE);
+    }
+
+    #[test]
+    fn test_round_trip_serialization() {
+        let original = GitObject::Commit {
+            tree: "abc123def4567890123456789012345678901234".to_string(),
+            parents: vec![],
+            author: "Test <test@example.com> 1234567890 +0000".to_string(),
+            committer: "Test <test@example.com> 1234567890 +0000".to_string(),
+            message: "Test message\n".to_string(),
+        };
+
+        // Test that hash is consistent between formats
+        let hash1 = original.compute_hash();
+        
+        // Test loose format round trip
+        let loose_data = original.to_loose_format();
+        let from_loose = GitObject::from_loose_format(&loose_data).unwrap();
+        let hash2 = from_loose.compute_hash();
+
+        // Hashes should be consistent
+        assert_eq!(hash1, hash2);
+        assert_eq!(original, from_loose);
     }
 }
-
