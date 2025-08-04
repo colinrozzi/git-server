@@ -404,8 +404,13 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
     // For MVP: Send NAK (no have negotiation) and generate packfile
     let mut response = Vec::new();
     
-    // Send NAK response (no have/want negotiation for MVP)
+    // Protocol v2 fetch response format requires sections
+    // Start with acknowledgments section
+    response.extend(encode_pkt_line(b"acknowledgments\n"));
     response.extend(encode_pkt_line(b"NAK\n"));
+    
+    // Send delimiter packet to separate sections (0001)
+    response.extend(b"0001");
     
     // Generate packfile for wanted objects
     match generate_packfile_for_wants(repo_state, &wants) {
