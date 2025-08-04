@@ -183,18 +183,27 @@ impl GitRepoState {
     fn handle_v1_push(&mut self, push: PushRequest) -> HttpResponse {
         log("=== DEBUGGING V1 PUSH OPERATION ===");
         log(&format!("Push has {} ref updates", push.ref_updates.len()));
-        log(&format!("Push has {} bytes of pack data", push.pack_data.len()));
+        log(&format!(
+            "Push has {} bytes of pack data",
+            push.pack_data.len()
+        ));
         log(&format!("Push capabilities: {:?}", push.capabilities));
-        
+
         for (i, (ref_name, old_oid, new_oid)) in push.ref_updates.iter().enumerate() {
-            log(&format!("Ref update {}: {} {} -> {}", i, ref_name, old_oid, new_oid));
+            log(&format!(
+                "Ref update {}: {} {} -> {}",
+                i, ref_name, old_oid, new_oid
+            ));
         }
-        
+
         if !push.pack_data.is_empty() {
             if push.pack_data.starts_with(b"PACK") {
                 log("✅ Pack data has valid PACK signature");
             } else {
-                log(&format!("❌ Pack data invalid signature: {:?}", &push.pack_data[..4.min(push.pack_data.len())]));
+                log(&format!(
+                    "❌ Pack data invalid signature: {:?}",
+                    &push.pack_data[..4.min(push.pack_data.len())]
+                ));
             }
         }
 
@@ -370,7 +379,11 @@ impl GitRepoState {
         let checksum = sha1_hash(&pack);
         pack.extend(&checksum);
 
-        log(&format!("Generated packfile: {} bytes (header + {} objects + 20-byte checksum)", pack.len(), object_ids.len()));
+        log(&format!(
+            "Generated packfile: {} bytes (header + {} objects + 20-byte checksum)",
+            pack.len(),
+            object_ids.len()
+        ));
         Ok(pack)
     }
 
@@ -586,29 +599,8 @@ impl GitRepoState {
                     GitObject::Tag { .. } => "tag",
                 }
             ));
-            // DEBUG: Log raw object details for debugging
-            if let GitObject::Commit {
-                tree,
-                parents,
-                author,
-                committer,
-                message,
-            } = &obj
-            {
-                log(&format!("COMMIT DEBUG - tree: {}, parents: {:?}, author: {}, committer: {}, message: {}", tree, parents, author, committer, message));
 
-                // DEBUG: Log the exact serialized content
-                let serialized = crate::git::repository::serialize_commit_object(
-                    tree, parents, author, committer, message,
-                );
-                log(&format!(
-                    "COMMIT SERIALIZED: {:?}",
-                    std::str::from_utf8(&serialized).unwrap_or("<invalid utf8>")
-                ));
-                log(&format!("COMMIT SERIALIZED BYTES: {:?}", serialized));
-            }
-
-            let hash = crate::utils::hash::calculate_git_hash(&obj);
+            let hash = obj.compute_hash();
             log(&format!("Calculated hash: {}", hash));
 
             // Only add new objects, skip duplicates
@@ -696,14 +688,20 @@ impl GitRepoState {
         log("Processing complete push operation");
 
         // Phase 1: Parse and store pack file objects
-        log(&format!("About to process pack file with {} bytes", pack_data.len()));
+        log(&format!(
+            "About to process pack file with {} bytes",
+            pack_data.len()
+        ));
         let new_hashes = match self.process_pack_file(pack_data) {
             Ok(hashes) => {
-                log(&format!("✅ Successfully processed pack file, got {} new objects", hashes.len()));
+                log(&format!(
+                    "✅ Successfully processed pack file, got {} new objects",
+                    hashes.len()
+                ));
                 hashes
-            },
+            }
             Err(e) => {
-                log(&format!("❌ Pack file processing failed: {}", e)); 
+                log(&format!("❌ Pack file processing failed: {}", e));
                 return Err(format!("pack processing failed: {}", e));
             }
         };
@@ -749,74 +747,6 @@ impl GitRepoState {
         log("Push operation completed successfully");
         Ok(updated_refs)
     }
-}
-
-/// Serialize a tree object to Git's binary format
-pub fn serialize_tree_object(entries: &[TreeEntry]) -> Vec<u8> {
-    let mut data = Vec::new();
-
-    // Sort entries by name (Git requirement for consistent hashing)
-    let mut sorted_entries = entries.to_vec();
-    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    for entry in &sorted_entries {
-        // Mode as string (no leading zeros for 100644)
-        data.extend(entry.mode.as_bytes());
-        data.push(b' '); // Space separator
-
-        // Filename
-        data.extend(entry.name.as_bytes());
-        data.push(0); // Null terminator
-
-        // Hash as 20 binary bytes (not hex string)
-        if entry.hash.len() == 40 {
-            for i in (0..40).step_by(2) {
-                if let Ok(byte) = u8::from_str_radix(&entry.hash[i..i + 2], 16) {
-                    data.push(byte);
-                } else {
-                    // Handle invalid hex - this should not happen with proper hashes
-                    log(&format!("Warning: invalid hex in hash {}", entry.hash));
-                    break;
-                }
-            }
-        } else {
-            log(&format!(
-                "Warning: invalid hash length for {}: {}",
-                entry.name, entry.hash
-            ));
-        }
-    }
-
-    data
-}
-
-/// Serialize a commit object to Git's text format
-pub fn serialize_commit_object(
-    tree: &str,
-    parents: &[String],
-    author: &str,
-    committer: &str,
-    message: &str,
-) -> Vec<u8> {
-    let mut content = String::new();
-
-    content.push_str(&format!("tree {}\n", tree));
-
-    for parent in parents {
-        content.push_str(&format!("parent {}\n", parent));
-    }
-
-    // Use the actual author and committer strings as-is (they include timestamps)
-    content.push_str(&format!("author {}\n", author));
-    content.push_str(&format!("committer {}\n", committer));
-    content.push('\n'); // Empty line before message
-    content.push_str(message);
-    content.push('\n'); // Trailing newline after message
-
-    // CRITICAL FIX: Git commit objects should NOT have trailing newlines
-    // The message itself should be the final content without additional newlines
-
-    content.into_bytes()
 }
 
 #[cfg(test)]
