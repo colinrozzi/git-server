@@ -1,6 +1,7 @@
 use super::objects::{GitObject, TreeEntry};
 use super::pack::parse_pack_file;
 use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
+use crate::bindings::theater::simple::runtime::log;
 use crate::protocol::http::{
     create_error_response, create_response, create_status_response,
     create_status_response_with_capabilities, encode_flush_pkt, encode_pkt_line,
@@ -8,7 +9,6 @@ use crate::protocol::http::{
 };
 use crate::protocol::version_one::{parse_receive_pack_request, PushRequest};
 use crate::protocol::version_two::{parse_command_request, CommandRequest};
-use crate::utils::logging::safe_log as log;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

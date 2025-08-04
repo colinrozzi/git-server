@@ -14,10 +14,7 @@ use bindings::theater::simple::http_types::{HttpRequest, HttpResponse, Middlewar
 use bindings::theater::simple::runtime::log;
 use git::objects::GitObject;
 use git::repository::GitRepoState;
-use protocol::http::{
-    create_response, handle_receive_pack_request, handle_smart_info_refs,
-    handle_upload_pack_request,
-};
+use protocol::http::create_response;
 
 struct Component;
 

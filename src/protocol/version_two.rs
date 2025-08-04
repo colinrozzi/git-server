@@ -1,5 +1,4 @@
 use crate::bindings::theater::simple::runtime::log;
-use crate::protocol::http::encode_pkt_line;
 
 #[derive(Debug)]
 pub struct CommandRequest {

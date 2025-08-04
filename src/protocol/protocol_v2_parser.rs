@@ -3,8 +3,8 @@
 //! Correct implementation for Git Protocol v2 receive-pack requests
 //! Addresses the "protocol v2 not implemented yet" error
 
+use crate::bindings::theater::simple::runtime::log;
 use crate::git::repository::GitRepoState;
-use crate::utils::logging::safe_log as log;
 
 /// Structure to hold ref updates from push
 #[derive(Debug, Clone)]
@@ -170,4 +170,3 @@ mod tests {
         }
     }
 }
-

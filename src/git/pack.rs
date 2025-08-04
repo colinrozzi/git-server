@@ -4,7 +4,7 @@
 //! for efficient transfer over the wire protocol.
 
 use super::objects::{GitObject, TreeEntry};
-use crate::utils::logging::safe_log as log;
+use crate::bindings::theater::simple::runtime::log;
 use flate2::read::ZlibDecoder;
 use std::io::Read;
 
@@ -406,4 +406,3 @@ mod tests {
         );
     }
 }
-
