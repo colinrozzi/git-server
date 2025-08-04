@@ -5,9 +5,9 @@ use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
 use crate::git::repository::GitRepoState;
 use crate::utils::logging::safe_log as log;
 
-const CAPABILITIES: &str = "report-status delete-refs ofs-delta agent=git-server/0.1.0";
-const MAX_PKT_PAYLOAD: usize = 0xFFF0 - 4; // pkt-line payload limit = 65 516
-const MAX_SIDEBAND_DATA: usize = MAX_PKT_PAYLOAD - 1; // minus 1-byte channel
+pub const CAPABILITIES: &str = "report-status delete-refs ofs-delta agent=git-server/0.1.0";
+pub const MAX_PKT_PAYLOAD: usize = 0xFFF0 - 4; // pkt-line payload limit = 65 516
+pub const MAX_SIDEBAND_DATA: usize = MAX_PKT_PAYLOAD - 1; // minus 1-byte channel
 
 /// Handle GET /info/refs - Support both Protocol v1 and v2
 pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpResponse {
@@ -557,7 +557,7 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
     }
 }
 
-fn create_error_response(message: &str) -> HttpResponse {
+pub fn create_error_response(message: &str) -> HttpResponse {
     let mut data = Vec::new();
     let error_line = format!("ERR {}\n", message);
     data.extend(encode_pkt_line(error_line.as_bytes()));
@@ -756,7 +756,7 @@ fn generate_simple_packfile(
     Ok(pack)
 }
 
-fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec<u8>, String> {
+pub fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec<u8>, String> {
     use crate::utils::compression::compress_zlib;
 
     let (obj_type, obj_data) = match obj {
@@ -885,19 +885,19 @@ fn serialize_tag_data(
 
 // ============================================================================
 // Packet utilities
-fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
+pub fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
     let total_len = data.len() + 4;
     let mut result = format!("{:04x}", total_len).into_bytes();
     result.extend_from_slice(data);
     result
 }
 
-fn encode_flush_pkt() -> Vec<u8> {
+pub fn encode_flush_pkt() -> Vec<u8> {
     b"0000".to_vec()
 }
 
 // Sideband encoding functions
-fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
+pub fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 1 + payload.len());
     let len_total = 4 /*header*/ + 1 /*band*/ + payload.len();
     out.extend(format!("{len_total:04x}").as_bytes()); // <-- include the 4 bytes!
@@ -906,10 +906,10 @@ fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-fn encode_progress_message(message: &[u8]) -> Vec<u8> {
+pub fn encode_progress_message(message: &[u8]) -> Vec<u8> {
     encode_sideband_data(2, message) // Band 2 = progress/status messages
 }
 
-fn encode_status_message(message: &[u8]) -> Vec<u8> {
+pub fn encode_status_message(message: &[u8]) -> Vec<u8> {
     encode_sideband_data(1, message) // Band 1 = status messages
 }

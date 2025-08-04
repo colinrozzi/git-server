@@ -1,6 +1,13 @@
 use super::objects::{GitObject, TreeEntry};
 use super::pack::parse_pack_file;
-use crate::utils::hash::calculate_git_hash_raw;
+use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
+use crate::protocol::http::{
+    create_error_response, create_response, create_status_response,
+    create_status_response_with_capabilities, encode_flush_pkt, encode_pkt_line,
+    encode_sideband_data, serialize_object_for_pack, CAPABILITIES, MAX_SIDEBAND_DATA,
+};
+use crate::protocol::version_one::{parse_receive_pack_request, PushRequest};
+use crate::protocol::version_two::{parse_command_request, CommandRequest};
 use crate::utils::logging::safe_log as log;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,188 +39,406 @@ impl Default for GitRepoState {
 }
 
 impl GitRepoState {
-    /// Create a new repository with the given name
-    pub fn new(name: String) -> Self {
-        let mut repo = Self::default();
-        repo.repo_name = name;
-        repo
-    }
+    /// Handle GET /info/refs - Support both Protocol v1 and v2
+    pub fn handle_smart_info_refs(&mut self, service: &str) -> HttpResponse {
+        log(&format!(
+            "Processing info/refs request for service: {}",
+            service
+        ));
 
-    /// Get an object from the repository
-    pub fn get_object(&self, hash: &str) -> Option<&GitObject> {
-        self.objects.get(hash)
-    }
-
-    /// Get the commit hash for a reference
-    pub fn get_ref(&self, ref_name: &str) -> Option<&String> {
-        self.refs.get(ref_name)
-    }
-
-    /// Create a minimal repository with basic objects for testing
-    pub fn ensure_minimal_objects(&mut self) {
-        if self.objects.is_empty() {
-            log("Creating minimal repository objects");
-            self.create_initial_commit();
+        match service {
+            "git-upload-pack" => {
+                // Upload-pack supports Protocol v2
+                self.handle_upload_pack_info_refs()
+            }
+            "git-receive-pack" => {
+                // Receive-pack falls back to Protocol v1 for compatibility
+                self.handle_receive_pack_info_refs_v1()
+            }
+            _ => create_error_response("Unknown service"),
         }
     }
 
-    /// Create an initial commit with a README file
-    fn create_initial_commit(&mut self) {
-        // Run SHA-1 diagnostic tests first
-        self.test_sha1_against_git();
+    /// Protocol v2 capability advertisement for upload-pack (fetch operations)
+    fn handle_upload_pack_info_refs(&self) -> HttpResponse {
+        log("Generating Protocol v2 capability advertisement for upload-pack");
 
-        // Create a simple blob (README file)
-        let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
-        log(&format!(
-            "README content: {:?}",
-            String::from_utf8_lossy(readme_content)
+        let mut response_data = Vec::new();
+
+        // Protocol v2 format for upload-pack
+        response_data.extend(encode_pkt_line(b"version 2\n"));
+        response_data.extend(encode_pkt_line(b"agent=git-server/0.1.0\n"));
+        response_data.extend(encode_pkt_line(b"object-format=sha1\n"));
+        response_data.extend(encode_pkt_line(b"server-option\n"));
+        response_data.extend(encode_pkt_line(b"ls-refs=symrefs peel ref-prefix unborn\n"));
+        response_data.extend(encode_pkt_line(
+            b"fetch=shallow thin-pack no-progress include-tag ofs-delta wait-for-done\n",
         ));
+        response_data.extend(encode_pkt_line(b"object-info=size\n"));
+        response_data.extend(encode_flush_pkt());
 
-        let readme_hash = calculate_git_hash_raw("blob", readme_content);
-        self.add_object(
-            readme_hash.clone(),
-            GitObject::Blob {
-                content: readme_content.to_vec(),
-            },
-        );
-        log(&format!(
-            "Created blob: {} (content hash should match)",
-            readme_hash
-        ));
-
-        // Create a tree containing the README
-        let tree_entries = vec![TreeEntry::blob(
-            "README.md".to_string(),
-            readme_hash.clone(),
-        )];
-
-        let tree_content = serialize_tree_object(&tree_entries);
-        log(&format!("Tree content bytes: {:?}", tree_content));
-
-        let tree_hash = calculate_git_hash_raw("tree", &tree_content);
-        self.add_object(
-            tree_hash.clone(),
-            GitObject::Tree {
-                entries: tree_entries,
-            },
-        );
-        log(&format!(
-            "Created tree: {} (should reference blob {})",
-            tree_hash, readme_hash
-        ));
-
-        // Create a commit with exact Git format
-        let author = "Git Server <git-server@example.com>";
-        let commit_content_raw =
-            serialize_commit_object(&tree_hash, &[], author, author, "Initial commit");
-
-        log(&format!(
-            "Commit content: {:?}",
-            String::from_utf8_lossy(&commit_content_raw)
-        ));
-
-        let commit_hash = calculate_git_hash_raw("commit", &commit_content_raw);
-        self.add_object(
-            commit_hash.clone(),
-            GitObject::Commit {
-                tree: tree_hash.clone(),
-                parents: vec![],
-                author: author.to_string(),
-                committer: author.to_string(),
-                message: "Initial commit".to_string(),
-            },
-        );
-
-        // Update refs
-        self.update_ref("refs/heads/main".to_string(), commit_hash.clone());
-
-        log(&format!("=== FINAL OBJECT HASHES ==="));
-        log(&format!("Blob (README.md): {}", readme_hash));
-        log(&format!("Tree (root): {}", tree_hash));
-        log(&format!("Commit (main): {}", commit_hash));
-        log(&format!("Refs: {:?}", self.refs));
-
-        // Verify object references
-        self.validate();
-
-        log(&format!(
-            "Created {} objects with proper SHA-1 hashes",
-            self.objects.len()
-        ));
+        create_response(
+            200,
+            "application/x-git-upload-pack-advertisement",
+            &response_data,
+        )
     }
 
-    /// SHA-1 diagnostic test function
-    fn test_sha1_against_git(&self) {
-        log("=== SHA-1 DIAGNOSTIC TEST ===");
+    /// Protocol v1 capability advertisement for receive-pack (push operations)
+    fn handle_receive_pack_info_refs_v1(&mut self) -> HttpResponse {
+        log(
+            "Generating Protocol v1 capability advertisement for receive-pack (push compatibility)",
+        );
 
-        // Test 1: Simple blob
-        let blob_content = b"hello world";
-        let blob_hash = calculate_git_hash_raw("blob", blob_content);
-        // Should match: echo "hello world" | git hash-object --stdin
-        // Expected: 95d09f2b10159347eece71399a7e2e907ea3df4f
-        log(&format!(
-            "Blob 'hello world': {} (expect: 95d09f2b10159347eece71399a7e2e907ea3df4f)",
-            blob_hash
-        ));
+        let mut response_data = Vec::new();
 
-        // Test 2: Empty tree
-        let empty_tree_hash = calculate_git_hash_raw("tree", &[]);
-        // Expected: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
-        log(&format!(
-            "Empty tree: {} (expect: 4b825dc642cb6eb9a060e54bf8d69288fbee4904)",
-            empty_tree_hash
-        ));
+        //
+        // 1. Smart-HTTP banner
+        //
+        let banner = b"# service=git-receive-pack\n";
+        response_data.extend(encode_pkt_line(banner));
+        response_data.extend(encode_flush_pkt()); // flush-pkt after banner
 
-        log("=== END SHA-1 DIAGNOSTIC ===");
+        // Protocol v1 format - advertise refs first, then capabilities
+        if self.refs.is_empty() {
+            // Empty repository - advertise capabilities on the null ref
+            let line = format!(
+                "0000000000000000000000000000000000000000 capabilities^{{}}\0{}\n",
+                CAPABILITIES
+            );
+            response_data.extend(encode_pkt_line(line.as_bytes()));
+        } else {
+            // Advertise existing refs with capabilities on the first ref
+            let mut refs: Vec<_> = self.refs.iter().collect();
+            refs.sort_by_key(|(name, _)| *name);
 
-        // Add detailed commit object debugging
-        self.debug_commit_object_format();
+            let mut first_ref = true;
+            for (ref_name, hash) in refs {
+                if first_ref {
+                    // First ref includes capabilities
+                    let line = format!("{} {}\0{}\n", hash, ref_name, CAPABILITIES);
+                    response_data.extend(encode_pkt_line(line.as_bytes()));
+                    first_ref = false;
+                } else {
+                    let line = format!("{} {}\n", hash, ref_name);
+                    response_data.extend(encode_pkt_line(line.as_bytes()));
+                }
+            }
+        }
+
+        response_data.extend(encode_flush_pkt());
+
+        log("returning response");
+        log(&String::from_utf8(response_data.clone()).unwrap());
+        create_response(
+            200,
+            "application/x-git-receive-pack-advertisement",
+            &response_data,
+        )
     }
 
-    /// Debug the exact commit object format
-    fn debug_commit_object_format(&self) {
-        log("=== COMMIT OBJECT DEBUG ===");
+    pub fn handle_receive_pack_request(&mut self, request: &HttpRequest) -> HttpResponse {
+        log("handle_receive_pack");
 
-        // Recreate the exact same objects
-        let tree_hash = "b0841aa3ac9b0dbe7aee598869498290a5a74a01";
-        let author = "Git Server <git-server@example.com>";
-        let timestamp = "1609459200 +0000";
+        let body = match &request.body {
+            Some(b) => b,
+            None => {
+                log("missing request body, returning with a status response");
+                return create_status_response(false, vec!["unpack missing-request".to_string()]);
+            }
+        };
 
-        // Create commit content exactly as we do
-        let mut commit_content = String::new();
-        commit_content.push_str(&format!("tree {}\n", tree_hash));
-        commit_content.push_str(&format!("author {} {}\n", author, timestamp));
-        commit_content.push_str(&format!("committer {} {}\n", author, timestamp));
-        commit_content.push('\n');
-        commit_content.push_str("Initial commit");
+        log("body found, parsing request");
+        match parse_receive_pack_request(body) {
+            Ok(push) => self.handle_v1_push(push),
+            Err(e) => {
+                // For parse errors, we don't have capabilities yet, so use basic response
+                create_status_response(false, vec![format!("unpack {}", e)])
+            }
+        }
+    }
 
-        log(&format!("Commit content string: '{}'", commit_content));
+    pub fn handle_upload_pack_request(&mut self, request: &HttpRequest) -> HttpResponse {
+        log("handle_upload_pack");
+
+        log("Processing Protocol v2 upload-pack request");
+        let body = match &request.body {
+            Some(b) => b,
+            None => return create_error_response("Missing request body"),
+        };
+
+        let parsed = match parse_command_request(body) {
+            Ok(req) => req,
+            Err(e) => return create_error_response(&e),
+        };
+
+        match parsed.command.as_str() {
+            "ls-refs" => self.handle_ls_refs(&parsed),
+            "fetch" => self.handle_fetch(&parsed),
+            "object-info" => self.handle_object_info(&parsed),
+            _ => create_error_response(&format!("Unknown command: {}", parsed.command)),
+        }
+    }
+
+    fn handle_v1_push(&mut self, push: PushRequest) -> HttpResponse {
+        log("Processing Protocol v1 push operation");
+
+        if push.ref_updates.is_empty() && push.pack_data.is_empty() {
+            return create_status_response_with_capabilities(true, vec![], &push.capabilities);
+        }
+
+        match self.process_push_operation(&push.pack_data, push.ref_updates) {
+            Ok(statuses) => {
+                log("Push operation successful, processing statuses");
+                let ref_statuses: Vec<String> = statuses
+                    .iter()
+                    .map(|status| {
+                        if status.starts_with("create ") {
+                            format!("ok {}", &status[7..])
+                        } else if status.starts_with("update ") {
+                            format!("ok {}", &status[7..])
+                        } else {
+                            status.clone()
+                        }
+                    })
+                    .collect();
+                create_status_response_with_capabilities(true, ref_statuses, &push.capabilities)
+            }
+            Err(e) => create_status_response_with_capabilities(
+                false,
+                vec![format!("unpack {}", e)],
+                &push.capabilities,
+            ),
+        }
+    }
+
+    fn handle_ls_refs(&self, _request: &CommandRequest) -> HttpResponse {
+        log("Handling ls-refs command");
+        let mut response = Vec::new();
+
+        if self.refs.is_empty() {
+            log("Empty repository - showing unborn HEAD");
+            response.extend(encode_pkt_line(
+                "unborn HEAD symref-target:refs/heads/main\n".as_bytes(),
+            ));
+        } else {
+            let mut refs: Vec<_> = self.refs.iter().collect();
+            refs.sort_by_key(|(name, _)| *name);
+
+            for (ref_name, hash) in refs {
+                let line = format!("{} {}\n", hash, ref_name);
+                response.extend(encode_pkt_line(line.as_bytes()));
+            }
+        }
+
+        response.extend(encode_flush_pkt());
+        create_response(200, "application/x-git-upload-pack-result", &response)
+    }
+
+    fn handle_fetch(&self, request: &CommandRequest) -> HttpResponse {
+        log("Handling Protocol v2 fetch command");
+
+        // Parse want lines from request args
+        let mut wants = Vec::new();
+        let mut has_done = false;
+
+        for arg in &request.args {
+            if arg.starts_with("want ") {
+                wants.push(arg[5..].to_string()); // Remove "want " prefix
+                log(&format!("Client wants: {}", &arg[5..]));
+            } else if arg == "done" {
+                has_done = true;
+                log("Client sent 'done' - negotiation finished, skipping acknowledgments");
+            }
+        }
+
+        if wants.is_empty() {
+            log("Error: No wants specified in fetch request");
+            return create_error_response("No wants specified");
+        }
+
         log(&format!(
-            "Commit content bytes: {:?}",
-            commit_content.as_bytes()
+            "Fetch request: wants={}, done={}",
+            wants.len(),
+            has_done
         ));
-        log(&format!("Commit content length: {}", commit_content.len()));
 
-        // Calculate hash
-        let commit_hash = calculate_git_hash_raw("commit", commit_content.as_bytes());
-        log(&format!("Our calculated hash: {}", commit_hash));
+        // Generate packfile for wanted objects
+        match self.generate_packfile_for_wants(&wants) {
+            Ok(packfile) => {
+                log(&format!("Generated packfile: {} bytes", packfile.len()));
 
-        // Create the Git header that goes into the hash calculation
-        let header = format!("commit {}\0", commit_content.len());
-        log(&format!("Git object header: '{}'", header));
+                let mut response = Vec::new();
+
+                /* ----- 1.  acknowledgments  (only when !has_done) ----- */
+                if !has_done {
+                    response.extend(encode_pkt_line(b"acknowledgments\n"));
+                    response.extend(encode_pkt_line(b"NAK\n")); // or real ACK/ready lines
+                    response.extend(b"0001"); // delim-pkt -> next section
+                }
+
+                // Packfile section header
+                response.extend(encode_pkt_line(b"packfile\n"));
+
+                /* ----- 3.  side-band-encode the pack ----- */
+                let mut pos = 0;
+                // ----- 3. side-band-encode the pack -----
+                while pos < packfile.len() {
+                    // how much of the pack we can send in this side-band frame
+                    let chunk_end = std::cmp::min(pos + MAX_SIDEBAND_DATA, packfile.len());
+
+                    // helper builds: <4-byte length><0x01><payload>
+                    response.extend(encode_sideband_data(1, &packfile[pos..chunk_end]));
+
+                    pos = chunk_end;
+                }
+
+                // End packfile section with flush packet
+                response.extend(encode_flush_pkt()); // 0000 - end of response
+
+                log(&format!("Total response size: {} bytes", response.len()));
+                create_response(200, "application/x-git-upload-pack-result", &response)
+            }
+            Err(e) => {
+                log(&format!("Failed to generate packfile: {}", e));
+                create_error_response(&format!("packfile generation failed: {}", e))
+            }
+        }
+    }
+
+    fn handle_object_info(&self, _request: &CommandRequest) -> HttpResponse {
+        create_error_response("object-info not implemented yet")
+    }
+
+    fn generate_packfile_for_wants(&self, wants: &[String]) -> Result<Vec<u8>, String> {
+        log(&format!("Generating packfile for {} wants", wants.len()));
+
+        // Collect all objects needed for the wants
+        let objects_to_send = self.collect_objects_for_wants(wants)?;
+        log(&format!("Collected objects: {:?}", objects_to_send));
+
+        // Generate the packfile
+        self.generate_simple_packfile(&objects_to_send)
+    }
+
+    fn generate_simple_packfile(&self, object_ids: &[String]) -> Result<Vec<u8>, String> {
+        use crate::utils::hash::sha1_hash;
+
+        let mut pack = Vec::new();
+
+        // Pack header: "PACK" + version(2) + object_count
+        pack.extend(b"PACK");
+        pack.extend(&2u32.to_be_bytes()); // version 2
+        pack.extend(&(object_ids.len() as u32).to_be_bytes());
+
         log(&format!(
-            "Full hash input: header + content = {} + {}",
-            header.len(),
-            commit_content.len()
+            "Pack header: version=2, objects={}",
+            object_ids.len()
         ));
 
-        // Show the exact bytes that get hashed
-        let mut full_hash_input: Vec<u8> = Vec::new();
-        full_hash_input.extend(header.as_bytes());
-        full_hash_input.extend(commit_content.as_bytes());
-        log(&format!("Full SHA-1 input bytes: {:?}", full_hash_input));
+        // Add each object
+        for obj_id in object_ids {
+            if let Some(obj) = self.objects.get(obj_id) {
+                log(&format!("Processing object: {}", obj));
+                let obj_data = serialize_object_for_pack(obj)?;
+                pack.extend(&obj_data);
+            } else {
+                return Err(format!("Object not found: {}", obj_id));
+            }
+        }
 
-        log("=== END COMMIT OBJECT DEBUG ===");
+        // Pack checksum (SHA1 of entire pack so far)
+        let checksum = sha1_hash(&pack);
+        pack.extend(&checksum);
+
+        log(&format!("Generated packfile: {:?}", pack));
+        Ok(pack)
+    }
+
+    fn collect_objects_for_wants(&self, wants: &[String]) -> Result<Vec<String>, String> {
+        use std::collections::HashSet;
+        let mut objects = HashSet::new();
+
+        for want_hash in wants {
+            // Add the wanted object itself
+            objects.insert(want_hash.clone());
+
+            // If it's a commit, traverse to get tree + blobs
+            if let Some(obj) = self.objects.get(want_hash) {
+                match obj {
+                    crate::git::objects::GitObject::Commit { tree, parents, .. } => {
+                        // Add the tree
+                        objects.insert(tree.clone());
+
+                        // Add all objects in the tree
+                        self.collect_tree_objects(tree, &mut objects)?;
+
+                        // Add parent commits recursively
+                        for parent_hash in parents {
+                            self.collect_commit_ancestors(parent_hash, &mut objects)?;
+                        }
+                    }
+                    crate::git::objects::GitObject::Tree { .. } => {
+                        // If want is a tree, collect all its objects
+                        self.collect_tree_objects(want_hash, &mut objects)?;
+                    }
+                    _ => {
+                        // Blob or tag, just include it
+                    }
+                }
+            } else {
+                return Err(format!("Wanted object not found: {}", want_hash));
+            }
+        }
+
+        Ok(objects.into_iter().collect())
+    }
+
+    fn collect_tree_objects(
+        &self,
+        tree_hash: &str,
+        objects: &mut std::collections::HashSet<String>,
+    ) -> Result<(), String> {
+        if let Some(crate::git::objects::GitObject::Tree { entries }) = self.objects.get(tree_hash)
+        {
+            for entry in entries {
+                objects.insert(entry.hash.clone());
+
+                // If this entry is also a tree, recurse
+                if entry.mode == "040000" {
+                    // Directory mode
+                    self.collect_tree_objects(&entry.hash, objects)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_commit_ancestors(
+        &self,
+        commit_hash: &str,
+        objects: &mut std::collections::HashSet<String>,
+    ) -> Result<(), String> {
+        if objects.contains(commit_hash) {
+            return Ok(()); // Already processed
+        }
+
+        objects.insert(commit_hash.to_string());
+
+        if let Some(crate::git::objects::GitObject::Commit { tree, parents, .. }) =
+            self.objects.get(commit_hash)
+        {
+            // Add the tree and its contents
+            objects.insert(tree.clone());
+            self.collect_tree_objects(tree, objects)?;
+
+            // Recurse to parents
+            for parent_hash in parents {
+                self.collect_commit_ancestors(parent_hash, objects)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Validate repository object references
@@ -294,174 +519,6 @@ impl GitRepoState {
         errors
     }
 
-    /// Enhanced debugging for object validation issues
-    pub fn debug_object_consistency(&self) {
-        log("=== DETAILED OBJECT CONSISTENCY CHECK ===");
-
-        for (stored_hash, obj) in &self.objects {
-            log(&format!("Checking object: {}", stored_hash));
-
-            // Re-serialize the object and recalculate its hash
-            let (recalculated_hash, serialized_content) = match obj {
-                GitObject::Blob { content } => {
-                    let hash = calculate_git_hash_raw("blob", content);
-                    (hash, content.clone())
-                }
-                GitObject::Tree { entries } => {
-                    let serialized = serialize_tree_object(entries);
-                    let hash = calculate_git_hash_raw("tree", &serialized);
-                    (hash, serialized)
-                }
-                GitObject::Commit {
-                    tree,
-                    parents,
-                    author,
-                    committer,
-                    message,
-                } => {
-                    let serialized =
-                        serialize_commit_object(tree, parents, author, committer, message);
-                    let hash = calculate_git_hash_raw("commit", &serialized);
-                    (hash, serialized)
-                }
-                GitObject::Tag { .. } => {
-                    // Tags not implemented yet
-                    continue;
-                }
-            };
-
-            if stored_hash != &recalculated_hash {
-                log(&format!("❌ HASH MISMATCH for object {}", stored_hash));
-                log(&format!("   Stored hash:      {}", stored_hash));
-                log(&format!("   Recalculated:     {}", recalculated_hash));
-                log(&format!("   Object type:      {}", obj.object_type()));
-                log(&format!(
-                    "   Serialized size:  {} bytes",
-                    serialized_content.len()
-                ));
-
-                // Show first 100 bytes of serialized content for debugging
-                let preview = if serialized_content.len() > 100 {
-                    format!("{:?}...", &serialized_content[..100])
-                } else {
-                    format!("{:?}", serialized_content)
-                };
-                log(&format!("   Serialized preview: {}", preview));
-
-                // For commits, show the exact string format
-                if let GitObject::Commit { .. } = obj {
-                    if let Ok(commit_str) = String::from_utf8(serialized_content.clone()) {
-                        log(&format!("   Commit string: '{}'", commit_str));
-                    }
-                }
-            } else {
-                log(&format!(
-                    "✅ Hash consistent for {} ({})",
-                    obj.object_type(),
-                    stored_hash
-                ));
-            }
-        }
-
-        log("=== END OBJECT CONSISTENCY CHECK ===");
-    }
-
-    /// Enhanced version of ensure_minimal_objects with detailed debugging
-    pub fn ensure_minimal_objects_debug(&mut self) {
-        if !self.objects.is_empty() {
-            log("Objects already exist, running consistency checks...");
-            self.debug_object_consistency();
-            return;
-        }
-
-        log("Creating minimal repository objects with enhanced debugging");
-
-        // Test our hash implementation first
-        self.test_sha1_against_git();
-
-        // Create objects with detailed logging
-        log("=== CREATING REPOSITORY OBJECTS ===");
-
-        // 1. Create README blob
-        let readme_content = b"# Git Server\n\nThis is a WebAssembly git server!\n";
-        log(&format!(
-            "Creating README blob with {} bytes",
-            readme_content.len()
-        ));
-        log(&format!(
-            "README content: {:?}",
-            String::from_utf8_lossy(readme_content)
-        ));
-
-        let readme_hash = calculate_git_hash_raw("blob", readme_content);
-        let readme_blob = GitObject::Blob {
-            content: readme_content.to_vec(),
-        };
-        self.add_object(readme_hash.clone(), readme_blob);
-
-        // 2. Create tree
-        let tree_entries = vec![TreeEntry::blob(
-            "README.md".to_string(),
-            readme_hash.clone(),
-        )];
-        let tree_content = serialize_tree_object(&tree_entries);
-        log(&format!(
-            "Creating tree with {} entries, {} bytes",
-            tree_entries.len(),
-            tree_content.len()
-        ));
-        log(&format!("Tree entries: {:?}", tree_entries));
-        log(&format!("Tree content bytes: {:?}", tree_content));
-
-        let tree_hash = calculate_git_hash_raw("tree", &tree_content);
-        let tree_obj = GitObject::Tree {
-            entries: tree_entries,
-        };
-        self.add_object(tree_hash.clone(), tree_obj);
-
-        // 3. Create commit
-        let author = "Git Server <git-server@example.com>";
-        let commit_content =
-            serialize_commit_object(&tree_hash, &[], author, author, "Initial commit");
-        log(&format!(
-            "Creating commit with {} bytes",
-            commit_content.len()
-        ));
-        log(&format!(
-            "Commit content: {:?}",
-            String::from_utf8_lossy(&commit_content)
-        ));
-
-        let commit_hash = calculate_git_hash_raw("commit", &commit_content);
-        let commit_obj = GitObject::Commit {
-            tree: tree_hash.clone(),
-            parents: vec![],
-            author: author.to_string(),
-            committer: author.to_string(),
-            message: "Initial commit".to_string(),
-        };
-        self.add_object(commit_hash.clone(), commit_obj);
-
-        // 4. Update refs
-        self.update_ref("refs/heads/main".to_string(), commit_hash.clone());
-
-        log("=== FINAL VERIFICATION ===");
-        log(&format!("Created {} objects:", self.objects.len()));
-        log(&format!("  Blob (README.md): {}", readme_hash));
-        log(&format!("  Tree (root):      {}", tree_hash));
-        log(&format!("  Commit (main):    {}", commit_hash));
-        log(&format!("Refs: {:?}", self.refs));
-
-        // Run all consistency checks
-        self.debug_object_consistency();
-        self.validate();
-
-        log(&format!(
-            "Repository initialization complete with {} objects",
-            self.objects.len()
-        ));
-    }
-
     /// Add an object to the repository (Smart HTTP)
     pub fn add_object(&mut self, hash: String, object: GitObject) {
         log(&format!(
@@ -489,16 +546,6 @@ impl GitRepoState {
         self.refs.remove(ref_name)
     }
 
-    /// Check if an object exists in the repository
-    pub fn has_object(&self, hash: &str) -> bool {
-        self.objects.contains_key(hash)
-    }
-
-    /// Get current value of a reference
-    pub fn get_ref_value(&self, ref_name: &str) -> Option<&String> {
-        self.refs.get(ref_name)
-    }
-
     /// Repository update methods for push operations
     pub fn process_pack_file(&mut self, pack_data: &[u8]) -> Result<Vec<String>, String> {
         log("Processing incoming pack file for repository updates");
@@ -522,17 +569,28 @@ impl GitRepoState {
             ));
             // DEBUG: Log raw object details for debugging
             match &obj {
-                GitObject::Commit { tree, parents, author, committer, message } => {
+                GitObject::Commit {
+                    tree,
+                    parents,
+                    author,
+                    committer,
+                    message,
+                } => {
                     log(&format!("COMMIT DEBUG - tree: {}, parents: {:?}, author: {}, committer: {}, message: {}", tree, parents, author, committer, message));
-                    
+
                     // DEBUG: Log the exact serialized content
-                    let serialized = crate::git::repository::serialize_commit_object(tree, parents, author, committer, message);
-                    log(&format!("COMMIT SERIALIZED: {:?}", std::str::from_utf8(&serialized).unwrap_or("<invalid utf8>")));
+                    let serialized = crate::git::repository::serialize_commit_object(
+                        tree, parents, author, committer, message,
+                    );
+                    log(&format!(
+                        "COMMIT SERIALIZED: {:?}",
+                        std::str::from_utf8(&serialized).unwrap_or("<invalid utf8>")
+                    ));
                     log(&format!("COMMIT SERIALIZED BYTES: {:?}", serialized));
                 }
                 _ => {}
             }
-            
+
             let hash = crate::utils::hash::calculate_git_hash(&obj);
             log(&format!("Calculated hash: {}", hash));
 
@@ -553,7 +611,7 @@ impl GitRepoState {
             "Added {} new objects to repository",
             new_hashes.len()
         ));
-        
+
         // DEBUG: Log all calculated hashes for comparison
         log(&format!("All calculated hashes: {:?}", new_hashes));
         Ok(new_hashes)
@@ -630,8 +688,14 @@ impl GitRepoState {
 
         // Phase 2: Validate all ref targets exist
         for (ref_name, old_oid, new_oid) in &ref_updates {
-            log(&format!("Validating ref update: {} {} -> {}", ref_name, old_oid, new_oid));
-            log(&format!("Available objects: {:?}", self.objects.keys().collect::<Vec<_>>()));
+            log(&format!(
+                "Validating ref update: {} {} -> {}",
+                ref_name, old_oid, new_oid
+            ));
+            log(&format!(
+                "Available objects: {:?}",
+                self.objects.keys().collect::<Vec<_>>()
+            ));
             if !self.objects.contains_key(new_oid) {
                 return Err(format!(
                     "Ref update validation failed: object {} not found",
@@ -657,52 +721,6 @@ impl GitRepoState {
 
         log(&format!("Push operation completed successfully"));
         Ok(updated_refs)
-    }
-
-    /// Ensure we have minimal objects for Smart HTTP testing
-    pub fn ensure_minimal_objects_for_smart_http(&mut self) {
-        if self.objects.is_empty() {
-            log("Creating minimal objects for Smart HTTP testing");
-
-            // Create a simple blob
-            let blob = GitObject::Blob {
-                content: b"Hello, Smart HTTP Git Server!\n".to_vec(),
-            };
-            let blob_hash = crate::utils::hash::calculate_git_hash(&blob);
-            self.add_object(blob_hash.clone(), blob);
-
-            // Create a simple tree containing the blob
-            let tree_entry = TreeEntry::new(
-                "100644".to_string(),
-                "README.md".to_string(),
-                blob_hash.clone(),
-            );
-            let tree = GitObject::Tree {
-                entries: vec![tree_entry],
-            };
-            let tree_hash = crate::utils::hash::calculate_git_hash(&tree);
-            self.add_object(tree_hash.clone(), tree);
-
-            // Create an initial commit
-            let commit = GitObject::Commit {
-                tree: tree_hash,
-                parents: vec![], // No parents - initial commit
-                author: "Git Server <git@server.com> 1640995200 +0000".to_string(),
-                committer: "Git Server <git@server.com> 1640995200 +0000".to_string(),
-                message: "Initial commit\n\nCreated by Smart HTTP Git Server".to_string(),
-            };
-            let commit_hash = crate::utils::hash::calculate_git_hash(&commit);
-            self.add_object(commit_hash.clone(), commit);
-
-            // Create main branch pointing to the commit
-            self.update_ref("refs/heads/main".to_string(), commit_hash);
-            self.head = "refs/heads/main".to_string();
-
-            log(&format!(
-                "Created {} objects and 1 ref for testing",
-                self.objects.len()
-            ));
-        }
     }
 }
 
@@ -777,39 +795,6 @@ pub fn serialize_commit_object(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_repository_creation() {
-        let repo = GitRepoState::new("test-repo".to_string());
-        assert_eq!(repo.repo_name, "test-repo");
-        assert_eq!(repo.head, "refs/heads/main");
-        assert!(repo.objects.is_empty());
-    }
-
-    #[test]
-    fn test_object_management() {
-        let mut repo = GitRepoState::new("test".to_string());
-
-        let blob = GitObject::Blob {
-            content: b"test content".to_vec(),
-        };
-        repo.add_object("abc123".to_string(), blob);
-
-        assert!(repo.get_object("abc123").is_some());
-        assert!(repo.get_object("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_ref_management() {
-        let mut repo = GitRepoState::new("test".to_string());
-
-        repo.update_ref("refs/heads/feature".to_string(), "def456".to_string());
-        assert_eq!(
-            repo.get_ref("refs/heads/feature"),
-            Some(&"def456".to_string())
-        );
-        assert_eq!(repo.get_ref("refs/heads/nonexistent"), None);
-    }
 
     #[test]
     fn test_tree_serialization() {

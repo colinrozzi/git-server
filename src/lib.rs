@@ -179,18 +179,18 @@ impl HttpHandlers for Component {
                         .find(|p| p.starts_with("service="))
                         .map(|p| p[8..].to_string())
                 }) {
-                    handle_smart_info_refs(&repo_state, &service)
+                    repo_state.handle_smart_info_refs(&service)
                 } else {
                     create_response(400, "text/plain", b"Missing service parameter")
                 }
             }
             "/git-upload-pack" => {
                 log("processing upload-pack");
-                handle_upload_pack_request(&mut repo_state, &request)
+                repo_state.handle_upload_pack_request(&request)
             }
             "/git-receive-pack" => {
                 log("processing receive-pack");
-                handle_receive_pack_request(&mut repo_state, &request)
+                repo_state.handle_receive_pack_request(&request)
             }
             "/" => {
                 // Modern debug endpoint
