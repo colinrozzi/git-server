@@ -10,11 +10,11 @@ git add test.txt
 git commit -m "Initial commit"
 
 git remote add wasm http://localhost:8080
-GIT_TRACE_PACKET=1 GIT_TRACE=1 GIT_RECEIVE_PACK_DEBUG=1 git push -u wasm main
+git push -u wasm main
 
 cd ..
 
-GIT_TRACE_PACKET=1 GIT_TRACE=1 GIT_RECEIVE_PACK_DEBUG=1 git clone http://localhost:8080 tmp-clone
+GIT_TRACE_PACKET=1 GIT_TRACE_CURL=1 git clone http://localhost:8080 tmp-clone
 
 rm -rf tmp-dir
 rm -rf tmp-clone
