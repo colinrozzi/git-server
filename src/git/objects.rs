@@ -1,3 +1,4 @@
+use crate::bindings::theater::simple::runtime::log;
 use crate::protocol::http::encode_pack_object_header;
 use crate::utils::compression::compress_zlib;
 use std::fmt::Display;
@@ -107,6 +108,10 @@ impl GitObject {
                 data.extend_from_slice(committer.as_bytes());
                 data.push(b'\n');
                 data.extend_from_slice(message.as_bytes());
+                log(&format!(
+                    "serialized commit:\n{}",
+                    String::from_utf8_lossy(&data).as_ref()
+                ));
                 data
             }
             GitObject::Tag {
