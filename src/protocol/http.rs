@@ -623,10 +623,7 @@ fn generate_packfile_for_wants(
 
     // Collect all objects needed for the wants
     let objects_to_send = collect_objects_for_wants(repo_state, wants)?;
-    log(&format!(
-        "Collected {} objects to send",
-        objects_to_send.len()
-    ));
+    log(&format!("Collected objects: {:?}", objects_to_send));
 
     // Generate the packfile
     generate_simple_packfile(repo_state, &objects_to_send)
@@ -743,6 +740,7 @@ fn generate_simple_packfile(
     // Add each object
     for obj_id in object_ids {
         if let Some(obj) = repo_state.objects.get(obj_id) {
+            log(&format!("Processing object: {}", obj));
             let obj_data = serialize_object_for_pack(obj)?;
             pack.extend(&obj_data);
         } else {
@@ -754,7 +752,7 @@ fn generate_simple_packfile(
     let checksum = sha1_hash(&pack);
     pack.extend(&checksum);
 
-    log(&format!("Generated packfile: {} bytes", pack.len()));
+    log(&format!("Generated packfile: {:?}", pack));
     Ok(pack)
 }
 
@@ -789,6 +787,11 @@ fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec
             (4u8, serialize_tag_data(object, tag_type, tagger, message)?) // OBJ_TAG = 4
         }
     };
+
+    log(&format!(
+        "Object data: {}",
+        String::from_utf8_lossy(&obj_data)
+    ));
 
     let mut result = Vec::new();
 
