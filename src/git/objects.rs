@@ -436,6 +436,76 @@ use std::io::Read;
 pub struct PackSerializer;
 
 impl PackSerializer {
+    pub fn parse(data: &[u8]) -> Result<Vec<GitObject>, String> {
+        let mut cursor = 0;
+
+        // ---- Pack header -----------------------------------------------------
+        if data.len() < 12 || &data[..4] != b"PACK" {
+            return Err("Invalid pack file: missing PACK signature".into());
+        }
+        cursor += 4;
+
+        let version = u32::from_be_bytes(data[cursor..cursor + 4].try_into().unwrap());
+        if version != 2 {
+            return Err(format!("Unsupported pack version: {version}"));
+        }
+        cursor += 4;
+
+        let num_objects = u32::from_be_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 4;
+
+        log(&format!("Parsing pack v{version} – {num_objects} objects"));
+
+        let mut objects = Vec::with_capacity(num_objects);
+
+        // ---- Objects ---------------------------------------------------------
+        for _ in 0..num_objects {
+            // 1. Header
+            let (obj_type, raw_size, header_len) = Self::decode_pack_header(&data[cursor..])?;
+            cursor += header_len;
+
+            // 2. Decompress once, keep how many bytes zlib consumed
+            let mut decoder = ZlibDecoder::new(&data[cursor..]);
+            let mut content = Vec::with_capacity(raw_size);
+            decoder
+                .read_to_end(&mut content)
+                .map_err(|e| format!("Failed to decompress object: {e}"))?;
+
+            let consumed = decoder.total_in() as usize;
+            if content.len() != raw_size {
+                return Err(format!(
+                    "Size mismatch: header says {raw_size}, zlib produced {}",
+                    content.len()
+                ));
+            }
+
+            // 3. Advance cursor exactly past the compressed stream
+            let compressed_slice = &data[cursor..cursor + consumed];
+            cursor += consumed;
+
+            // 4. Turn it into a GitObject (no second inflate!)
+            let git_obj = match obj_type {
+                1 => LooseObjectSerializer::deserialize_content("commit", &content),
+                2 => LooseObjectSerializer::deserialize_content("tree", &content),
+                3 => LooseObjectSerializer::deserialize_content("blob", &content),
+                4 => LooseObjectSerializer::deserialize_content("tag", &content),
+                6 | 7 => Err("Delta objects not supported yet".into()),
+                _ => Err(format!("Unknown pack object type: {obj_type}")),
+            }?;
+
+            objects.push(git_obj);
+
+            // If you still need the compressed bytes later (e.g. to write them
+            // back out) you already have `compressed_slice` above.
+        }
+
+        // ---- Optional: verify trailing SHA-1 ---------------------------------
+        // let expected = &data[cursor ..];
+        // …
+
+        Ok(objects)
+    }
+
     /// Serialize object for pack file (with pack header + compressed content)
     pub fn serialize_object(obj: &GitObject) -> Result<Vec<u8>, String> {
         // Get the raw content (same as loose object content - KEY FOR HASH CONSISTENCY!)
@@ -495,6 +565,31 @@ impl PackSerializer {
             }
             buf.push(byte);
         }
+    }
+
+    fn decode_pack_header(data: &[u8]) -> Result<(u8, usize, usize), String> {
+        if data.is_empty() {
+            return Err("Empty data when decoding pack header".to_string());
+        }
+
+        let mut byte = data[0];
+        let obj_type = (byte >> 4) & 0x07;
+        let mut size = (byte & 0x0F) as usize;
+        let mut shift = 4;
+        let mut offset = 1;
+
+        // Handle variable-length size encoding
+        while byte & 0x80 != 0 {
+            if offset >= data.len() {
+                return Err("Unexpected end of data in pack header".to_string());
+            }
+            byte = data[offset];
+            size |= ((byte & 0x7F) as usize) << shift;
+            shift += 7;
+            offset += 1;
+        }
+
+        Ok((obj_type, size, offset))
     }
 }
 

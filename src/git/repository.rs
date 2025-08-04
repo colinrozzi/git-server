@@ -1,4 +1,4 @@
-use super::objects::{GitObject, TreeEntry};
+use super::objects::{GitObject, PackSerializer};
 use super::pack::parse_pack_file;
 use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
 use crate::bindings::theater::simple::runtime::log;
@@ -583,7 +583,9 @@ impl GitRepoState {
         log("Processing incoming pack file for repository updates");
 
         log(&format!("pack file {:?}", pack_data));
-        let objects = parse_pack_file(pack_data)?;
+        //let objects = parse_pack_file(pack_data)?;
+        let objects =
+            PackSerializer::parse(pack_data).map_err(|e| format!("Pack parsing error: {}", e))?;
         let mut new_hashes = Vec::new();
 
         log(&format!("Parsed {} objects from pack file", objects.len()));

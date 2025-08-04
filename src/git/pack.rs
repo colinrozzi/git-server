@@ -40,7 +40,7 @@ impl ObjectType {
         }
     }
 
-    pub fn to_pack_type(&self) -> u8 {
+    pub fn to_pack_type(self) -> u8 {
         match self {
             ObjectType::Commit => 1,
             ObjectType::Tree => 2,
@@ -249,59 +249,6 @@ pub fn parse_pack_file(data: &[u8]) -> Result<Vec<GitObject>, String> {
     parser.parse()
 }
 
-/// Generate a pack file from a collection of Git objects
-pub fn generate_pack_file(objects: &[GitObject]) -> Result<Vec<u8>, String> {
-    let mut pack_data = Vec::new();
-
-    // Pack header
-    pack_data.extend_from_slice(PACK_SIGNATURE);
-    pack_data.extend_from_slice(&PACK_VERSION.to_be_bytes());
-    pack_data.extend_from_slice(&(objects.len() as u32).to_be_bytes());
-
-    // Pack objects using new serialization architecture
-    for obj in objects {
-        let obj_data = obj.to_pack_format()?;
-        pack_data.extend(obj_data);
-    }
-
-    // TODO: Add SHA-1 checksum of pack data
-    // For now, add dummy checksum (20 zero bytes)
-    pack_data.extend_from_slice(&[0u8; 20]);
-
-    Ok(pack_data)
-}
-
-/// Pack file generator for streaming large object sets
-pub struct PackGenerator {
-    objects: Vec<GitObject>,
-}
-
-impl PackGenerator {
-    pub fn new() -> Self {
-        Self {
-            objects: Vec::new(),
-        }
-    }
-
-    pub fn add_object(&mut self, obj: GitObject) {
-        self.objects.push(obj);
-    }
-
-    pub fn generate(&self) -> Result<Vec<u8>, String> {
-        generate_pack_file(&self.objects)
-    }
-
-    pub fn object_count(&self) -> usize {
-        self.objects.len()
-    }
-}
-
-impl Default for PackGenerator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,22 +259,6 @@ mod tests {
         assert_eq!(ObjectType::from_pack_type(2), Some(ObjectType::Tree));
         assert_eq!(ObjectType::from_pack_type(3), Some(ObjectType::Blob));
         assert_eq!(ObjectType::from_pack_type(9), None);
-    }
-
-    #[test]
-    fn test_pack_generation() {
-        let obj = GitObject::Blob {
-            content: b"hello world".to_vec(),
-        };
-
-        let mut generator = PackGenerator::new();
-        generator.add_object(obj);
-
-        let pack_data = generator.generate().unwrap();
-
-        // Should have pack header (12 bytes) + object data + checksum (20 bytes)
-        assert!(pack_data.len() > 32);
-        assert_eq!(&pack_data[0..4], PACK_SIGNATURE);
     }
 
     #[test]
