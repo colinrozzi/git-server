@@ -386,7 +386,7 @@ fn handle_ls_refs(repo_state: &GitRepoState, _request: &CommandRequest) -> HttpR
 }
 
 fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResponse {
-    log("Handling fetch command");
+    log("Handling Protocol v2 fetch command");
     
     // Parse want lines from request args
     let mut wants = Vec::new();
@@ -398,49 +398,64 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
             log(&format!("Client wants: {}", &arg[5..]));
         } else if arg == "done" {
             has_done = true;
-            log("Client sent 'done' - skipping acknowledgments section");
+            log("Client sent 'done' - negotiation finished, skipping acknowledgments");
         }
     }
     
     if wants.is_empty() {
+        log("Error: No wants specified in fetch request");
         return create_error_response("No wants specified");
     }
     
-    let mut response = Vec::new();
-    
-    // Protocol v2 fetch response format:
-    // If client sent 'done', skip acknowledgments and go straight to packfile
-    if !has_done {
-        // Send acknowledgments section (only if negotiation not finished)
-        response.extend(encode_pkt_line(b"acknowledgments\n"));
-        response.extend(encode_pkt_line(b"NAK\n"));
-        // Send delimiter packet to end acknowledgments section
-        response.extend(b"0001");
-    }
+    log(&format!("Fetch request: wants={}, done={}", wants.len(), has_done));
     
     // Generate packfile for wanted objects
     match generate_packfile_for_wants(repo_state, &wants) {
         Ok(packfile) => {
-            // Send delimiter packet to start packfile section (0001)
-            response.extend(b"0001");
+            log(&format!("Generated packfile: {} bytes", packfile.len()));
             
-            // Protocol v2 requires "packfile" section header
-            response.extend(encode_pkt_line(b"packfile\n"));
+            let mut response = Vec::new();
             
-            // Send packfile data in sideband format (band 1 = pack data)
-            let mut pos = 0;
-            while pos < packfile.len() {
-                let chunk_size = std::cmp::min(65520, packfile.len() - pos); // 64K - sideband byte
-                let chunk = &packfile[pos..pos + chunk_size];
-                response.extend(encode_sideband_data(1, chunk));
-                pos += chunk_size;
+            // Protocol v2 fetch response when client sends 'done':
+            // Skip acknowledgments section entirely and go straight to packfile
+            if !has_done {
+                log("Sending acknowledgments section (negotiation not finished)");
+                response.extend(encode_pkt_line(b"acknowledgments\n"));
+                response.extend(encode_pkt_line(b"NAK\n"));
+                // Delimiter to end acknowledgments section
+                response.extend(b"0001");
             }
             
-            // End with flush packet
-            response.extend(encode_flush_pkt());
-            // Optional response-end packet for stateless HTTP
-            response.extend(b"0002");
+            // Start packfile section with delimiter
+            log("Starting packfile section");
+            response.extend(b"0001"); // Delimiter packet to start packfile section
             
+            // Packfile section header
+            response.extend(encode_pkt_line(b"packfile\n"));
+            
+            // Send packfile data in sideband format (channel 1 = pack data)
+            if packfile.is_empty() {
+                log("Warning: Empty packfile generated");
+            } else {
+                let mut pos = 0;
+                let mut chunk_count = 0;
+                while pos < packfile.len() {
+                    let chunk_size = std::cmp::min(65519, packfile.len() - pos); // 64K-1 for sideband byte
+                    let chunk = &packfile[pos..pos + chunk_size];
+                    response.extend(encode_sideband_data(1, chunk)); // Channel 1 = pack data
+                    pos += chunk_size;
+                    chunk_count += 1;
+                }
+                log(&format!("Sent packfile in {} sideband chunks", chunk_count));
+            }
+            
+            // End packfile section with flush packet
+            response.extend(encode_flush_pkt()); // 0000 - end of response
+            
+            // Optional response-end packet for stateless HTTP
+            response.extend(b"0002"); // Response-end packet
+            
+            log(&format!("Total response size: {} bytes", response.len()));
             create_response(200, "application/x-git-upload-pack-result", &response)
         }
         Err(e) => {
@@ -456,48 +471,30 @@ fn handle_object_info(_repo_state: &GitRepoState, _request: &CommandRequest) -> 
 
 fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
     log(&format!(
-        "Parsing command request, data length: {} bytes",
+        "Parsing Protocol v2 command request, data length: {} bytes",
         data.len()
     ));
-    
-    // Debug: log the raw data
-    log(&format!("Raw data: {:?}", data));
-    log(&format!("Raw data as string: {:?}", String::from_utf8_lossy(data)));
 
     let mut lines = Vec::new();
     let mut pos = 0;
 
     while pos < data.len() {
         if pos + 4 > data.len() {
-            log(&format!("Breaking: remaining {} bytes < 4", data.len() - pos));
             break;
         }
 
         let len_bytes = &data[pos..pos + 4];
-        log(&format!("Length bytes at pos {}: {:?}", pos, len_bytes));
-        
-        let len_str = std::str::from_utf8(len_bytes).map_err(|e| {
-            log(&format!("UTF-8 error in length: {}", e));
-            "Invalid packet"
-        })?;
-        
-        log(&format!("Length string: '{}'", len_str));
-        
-        let len = u16::from_str_radix(len_str, 16).map_err(|e| {
-            log(&format!("Hex parse error: {}, string was: '{}'", e, len_str));
-            "Invalid packet length"
-        })?;
-        
-        log(&format!("Parsed length: {}", len));
+        let len_str = std::str::from_utf8(len_bytes).map_err(|_| "Invalid packet")?;
+        let len = u16::from_str_radix(len_str, 16).map_err(|_| "Invalid packet length")?;
 
         if len == 0 {
-            log("Found flush packet (0000), ending");
+            // Flush packet - end of request
             pos += 4;
             break;
         }
         
         if len == 1 {
-            log("Found delimiter packet (0001), continuing");
+            // Delimiter packet - continue
             pos += 4;
             continue;
         }
@@ -514,16 +511,12 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
         let line = std::str::from_utf8(content)
             .map_err(|e| format!("Invalid UTF-8 in packet content: {}", e))?
             .trim_end_matches('\n');
-
-        log(&format!("Parsed line: '{}'", line));
         
         if !line.is_empty() {
             lines.push(line.to_string());
         }
         pos += len as usize;
     }
-
-    log(&format!("Total parsed lines: {:?}", lines));
 
     if lines.is_empty() {
         return Err("No command found in request".to_string());
@@ -536,8 +529,7 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
         return Err(format!("Invalid command format: {}", first_line));
     };
 
-    log(&format!("Parsed command: '{}'", command));
-    log(&format!("Command args: {:?}", &lines[1..]));
+    log(&format!("Parsed Protocol v2 command: '{}' with {} args", command, lines.len() - 1));
 
     Ok(CommandRequest {
         command,
