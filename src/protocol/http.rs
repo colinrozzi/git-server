@@ -74,27 +74,6 @@ pub fn create_status_response_with_capabilities(
     create_response(200, "application/x-git-receive-pack-result", &data)
 }
 
-pub fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec<u8>, String> {
-    // Use the new centralized serialization to ensure hash consistency
-    obj.to_pack_format()
-}
-
-pub fn encode_pack_object_header(output: &mut Vec<u8>, obj_type: u8, size: usize) {
-    let mut size = size;
-    let mut byte = (obj_type << 4) | (size & 0x0F) as u8;
-    size >>= 4;
-
-    while size > 0 {
-        output.push(byte | 0x80); // MSB = 1 means more bytes follow
-        byte = (size & 0x7F) as u8;
-        size >>= 7;
-    }
-
-    output.push(byte); // Final byte with MSB = 0
-}
-
-// Old serialization functions removed - now using centralized GitObject serialization
-
 // ============================================================================
 // Packet utilities
 pub fn encode_pkt_line(data: &[u8]) -> Vec<u8> {
