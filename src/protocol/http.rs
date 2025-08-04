@@ -4,7 +4,6 @@
 use crate::bindings::theater::simple::http_types::HttpResponse;
 use crate::bindings::theater::simple::runtime::log;
 
-
 pub const CAPABILITIES: &str = "report-status delete-refs ofs-delta agent=git-server/0.1.0";
 pub const MAX_PKT_PAYLOAD: usize = 0xFFF0 - 4; // pkt-line payload limit = 65 516
 pub const MAX_SIDEBAND_DATA: usize = MAX_PKT_PAYLOAD - 1; // minus 1-byte channel
@@ -75,7 +74,6 @@ pub fn create_status_response_with_capabilities(
     create_response(200, "application/x-git-receive-pack-result", &data)
 }
 
-
 pub fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec<u8>, String> {
     use crate::utils::compression::compress_zlib;
 
@@ -125,7 +123,7 @@ pub fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result
     Ok(result)
 }
 
-fn encode_pack_object_header(output: &mut Vec<u8>, obj_type: u8, size: usize) {
+pub fn encode_pack_object_header(output: &mut Vec<u8>, obj_type: u8, size: usize) {
     let mut size = size;
     let mut byte = (obj_type << 4) | (size & 0x0F) as u8;
     size >>= 4;
@@ -226,7 +224,7 @@ pub fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-
 pub fn encode_status_message(message: &[u8]) -> Vec<u8> {
     encode_sideband_data(1, message) // Band 1 = status messages
 }
+
