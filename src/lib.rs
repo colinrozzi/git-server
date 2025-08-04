@@ -207,7 +207,7 @@ impl HttpHandlers for Component {
                      ✅ fetch command\n\
                      ✅ object-info command\n\
                      ✅ Structured responses\n\
-                     ✅ Sideband multiplexing\n\
+                     ✅ Simple packet-line protocol\n\
                      ✅ Modern packet-line protocol\n\n\
                      🔗 Endpoints:\n\
                      GET  /info/refs?service=git-upload-pack\n\
