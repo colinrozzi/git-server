@@ -1,13 +1,13 @@
 use super::objects::{GitObject, PackSerializer};
 use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
 use crate::bindings::theater::simple::runtime::log;
+use crate::protocol::command_request::{parse_command_request, CommandRequest};
 use crate::protocol::http::{
     create_error_response, create_response, create_status_response,
     create_status_response_with_capabilities, encode_flush_pkt, encode_pkt_line,
     encode_sideband_data, CAPABILITIES, MAX_SIDEBAND_DATA,
 };
-use crate::protocol::version_one::{parse_receive_pack_request, PushRequest};
-use crate::protocol::version_two::{parse_command_request, CommandRequest};
+use crate::protocol::push_request::{parse_receive_pack_request, PushRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
