@@ -74,22 +74,14 @@ impl ProtocolV2Parser {
                         .trim_end_matches('\n');
 
                     // Parse ref updates that look like: old-oid new-oid ref-name
-                    println!("Parsing packet content: '{}'  (len: {})", text, text.len());
                     if text.contains(' ') {
                         let parts: Vec<&str> = text.split_whitespace().collect();
-                        println!("Split into {} parts: {:?}", parts.len(), parts);
-                        if parts.len() >= 3 {
-                            println!("Part lengths: {} {} {}", parts[0].len(), parts[1].len(), parts.get(2).map_or(0, |s| s.len()));
-                        }
                         if parts.len() == 3 && parts[0].len() == 40 && parts[1].len() == 40 {
-                            println!("Adding ref update: {} {} -> {}", parts[2], parts[0], parts[1]);
                             ref_updates.push(RefUpdate {
                                 ref_name: parts[2].to_string(),
                                 old_oid: parts[0].to_string(),
                                 new_oid: parts[1].to_string(),
                             });
-                        } else {
-                            println!("Ref update conditions not met");
                         }
                     }
 
@@ -169,24 +161,7 @@ mod tests {
     #[test]
     fn test_empty_repository_push() {
         let test_data = b"0066000340e325d1b85b3c0d5d7d8c5d46efad08fcd8 0000000000000000000000000000000000000000 refs/heads/main\n0000PACK...";
-        
-        println!("Test data: {:?}", std::str::from_utf8(test_data).unwrap_or("invalid utf8"));
-        println!("Test data length: {}", test_data.len());
-        
         let result = ProtocolV2Parser::parse_receive_pack_request(test_data);
-        
-        match &result {
-            Ok(request) => {
-                println!("Success! Ref updates: {}", request.ref_updates.len());
-                for (i, update) in request.ref_updates.iter().enumerate() {
-                    println!("  Update {}: {} {} -> {}", i, update.ref_name, update.old_oid, update.new_oid);
-                }
-            }
-            Err(e) => {
-                println!("Error: {}", e);
-            }
-        }
-        
         assert!(result.is_ok());
 
         if let Ok(request) = result {
