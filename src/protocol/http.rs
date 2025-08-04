@@ -410,9 +410,8 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
     // Generate packfile for wanted objects
     match generate_packfile_for_wants(repo_state, &wants) {
         Ok(packfile) => {
-            // Send packfile directly (no sideband)
+            // Send packfile directly after NAK (no flush packet before packfile)
             response.extend(&packfile);
-            response.extend(encode_flush_pkt());
             
             create_response(200, "application/x-git-upload-pack-result", &response)
         }
