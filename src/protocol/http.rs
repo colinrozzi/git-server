@@ -416,15 +416,18 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
             
             let mut response = Vec::new();
             
-            // Protocol v2 fetch response when client sends 'done':
-            // Skip acknowledgments section entirely and go straight to packfile
-            if !has_done {
-                log("Sending acknowledgments section (negotiation not finished)");
-                response.extend(encode_pkt_line(b"acknowledgments\n"));
+            // Protocol v2 fetch response always needs ACK/NAK section
+            log("Sending acknowledgments section");
+            response.extend(encode_pkt_line(b"acknowledgments\n"));
+            if has_done {
+                // Client sent 'done', so we can send NAK and proceed to packfile
                 response.extend(encode_pkt_line(b"NAK\n"));
-                // Delimiter to end acknowledgments section
-                response.extend(b"0001");
+            } else {
+                // Negotiation continuing - send NAK for now (proper negotiation would require more logic)
+                response.extend(encode_pkt_line(b"NAK\n"));
             }
+            // Delimiter to end acknowledgments section
+            response.extend(b"0001");
             
             // Start packfile section with delimiter
             log("Starting packfile section");
