@@ -1,6 +1,6 @@
 name = "git-server"
 version = "0.1.0"
-component = "/Users/colinrozzi/work/actor-registry/git-server/./target/wasm32-wasip1/debug/git_server.wasm"
+component = "/Users/colinrozzi/work/actor-registry/git-server/./target/wasm32-unknown-unknown/release/git_server.wasm"
 description = "A basic Theater actor"
 save_chain = true
 
