@@ -335,7 +335,8 @@ impl<'a> PackParser<'a> {
             // Return message after headers
             if let Some(double_newline_idx) = content.find("\n\n") {
                 let message = &content[double_newline_idx + 2..];
-                return Some(message.trim().to_string());
+                // DON'T trim the message - preserve trailing newlines for correct SHA-1
+                return Some(message.to_string());
             }
             return Some(content.to_string());
         }

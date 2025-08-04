@@ -128,6 +128,12 @@ impl GitObject {
                 // commit message
                 data.extend_from_slice(message.as_bytes());
                 
+                // Git commit objects must end with exactly one newline
+                // If message doesn't end with newline, add one
+                if !message.ends_with('\n') {
+                    data.push(b'\n');
+                }
+                
                 #[cfg(not(test))]
                 log(&format!(
                     "serialized commit:\n{}",
