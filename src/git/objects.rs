@@ -1,17 +1,23 @@
+use std::fmt::Display;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum GitObject {
-    Blob { content: Vec<u8> },
-    Tree { entries: Vec<TreeEntry> },
-    Commit { 
+    Blob {
+        content: Vec<u8>,
+    },
+    Tree {
+        entries: Vec<TreeEntry>,
+    },
+    Commit {
         tree: String,
         parents: Vec<String>,
         author: String,
         committer: String,
         message: String,
     },
-    Tag { 
+    Tag {
         object: String,
         tag_type: String,
         tagger: String,
@@ -40,10 +46,48 @@ impl GitObject {
     /// Get the Git pack file type number
     pub fn pack_type(&self) -> u8 {
         match self {
-            GitObject::Blob { .. } => 1,    // OBJ_BLOB
-            GitObject::Tree { .. } => 2,    // OBJ_TREE
-            GitObject::Commit { .. } => 3,  // OBJ_COMMIT
-            GitObject::Tag { .. } => 4,     // OBJ_TAG
+            GitObject::Blob { .. } => 1,   // OBJ_BLOB
+            GitObject::Tree { .. } => 2,   // OBJ_TREE
+            GitObject::Commit { .. } => 3, // OBJ_COMMIT
+            GitObject::Tag { .. } => 4,    // OBJ_TAG
+        }
+    }
+}
+
+impl Display for GitObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GitObject::Blob { content } => write!(f, "Blob with {} bytes", content.len()),
+            GitObject::Tree { entries } => write!(f, "Tree with {} entries", entries.len()),
+            GitObject::Commit {
+                tree,
+                parents,
+                author,
+                committer,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Commit: tree={}, parents=[{}], author={}, committer={}, message={}",
+                    tree,
+                    parents.join(", "),
+                    author,
+                    committer,
+                    message
+                )
+            }
+            GitObject::Tag {
+                object,
+                tag_type,
+                tagger,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Tag: object={}, type={}, tagger={}, message={}",
+                    object, tag_type, tagger, message
+                )
+            }
         }
     }
 }
@@ -76,7 +120,9 @@ mod tests {
 
     #[test]
     fn test_object_types() {
-        let blob = GitObject::Blob { content: vec![1, 2, 3] };
+        let blob = GitObject::Blob {
+            content: vec![1, 2, 3],
+        };
         assert_eq!(blob.object_type(), "blob");
         assert_eq!(blob.pack_type(), 1);
 
