@@ -1,12 +1,19 @@
 #!/bin/bash
 # This script initializes a Git repository, creates a file, commits it,
 
+actor_id=$(theater start ../manifest.toml)
+echo "Server started with actor ID: $actor_id"
+
+echo "Giving the server time..."
+# sleep for a beat
+sleep 1
+
 mkdir tmp-dir
 cd tmp-dir
 
 git init
 echo "test" > test.txt
-git add test.txt
+git add .
 git commit -m "Initial commit"
 
 git remote add wasm http://localhost:8080
@@ -26,3 +33,4 @@ echo " ";
 
 rm -rf tmp-dir
 rm -rf tmp-clone
+theater stop $actor_id
