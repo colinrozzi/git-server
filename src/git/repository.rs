@@ -351,7 +351,7 @@ impl GitRepoState {
         let checksum = sha1_hash(&pack);
         pack.extend(&checksum);
 
-        log(&format!("Generated packfile: {:?}", pack));
+        log(&format!("Generated packfile: {} bytes (header + {} objects + 20-byte checksum)", pack.len(), object_ids.len()));
         Ok(pack)
     }
 
