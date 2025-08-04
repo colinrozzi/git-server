@@ -390,10 +390,15 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
     
     // Parse want lines from request args
     let mut wants = Vec::new();
+    let mut has_done = false;
+    
     for arg in &request.args {
         if arg.starts_with("want ") {
             wants.push(arg[5..].to_string()); // Remove "want " prefix
             log(&format!("Client wants: {}", &arg[5..]));
+        } else if arg == "done" {
+            has_done = true;
+            log("Client sent 'done' - skipping acknowledgments section");
         }
     }
     
@@ -401,22 +406,40 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
         return create_error_response("No wants specified");
     }
     
-    // For MVP: Send NAK (no have negotiation) and generate packfile
     let mut response = Vec::new();
     
-    // Protocol v2 fetch response format requires sections
-    // Start with acknowledgments section
-    response.extend(encode_pkt_line(b"acknowledgments\n"));
-    response.extend(encode_pkt_line(b"NAK\n"));
-    
-    // Send delimiter packet to separate sections (0001)
-    response.extend(b"0001");
+    // Protocol v2 fetch response format:
+    // If client sent 'done', skip acknowledgments and go straight to packfile
+    if !has_done {
+        // Send acknowledgments section (only if negotiation not finished)
+        response.extend(encode_pkt_line(b"acknowledgments\n"));
+        response.extend(encode_pkt_line(b"NAK\n"));
+        // Send delimiter packet to end acknowledgments section
+        response.extend(b"0001");
+    }
     
     // Generate packfile for wanted objects
     match generate_packfile_for_wants(repo_state, &wants) {
         Ok(packfile) => {
-            // Send packfile directly after NAK (no flush packet before packfile)
-            response.extend(&packfile);
+            // Send delimiter packet to start packfile section (0001)
+            response.extend(b"0001");
+            
+            // Protocol v2 requires "packfile" section header
+            response.extend(encode_pkt_line(b"packfile\n"));
+            
+            // Send packfile data in sideband format (band 1 = pack data)
+            let mut pos = 0;
+            while pos < packfile.len() {
+                let chunk_size = std::cmp::min(65520, packfile.len() - pos); // 64K - sideband byte
+                let chunk = &packfile[pos..pos + chunk_size];
+                response.extend(encode_sideband_data(1, chunk));
+                pos += chunk_size;
+            }
+            
+            // End with flush packet
+            response.extend(encode_flush_pkt());
+            // Optional response-end packet for stateless HTTP
+            response.extend(b"0002");
             
             create_response(200, "application/x-git-upload-pack-result", &response)
         }
