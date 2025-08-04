@@ -52,6 +52,69 @@ impl GitObject {
             GitObject::Tag { .. } => 4,    // OBJ_TAG
         }
     }
+
+    pub fn serialize_for_pack(&self) -> Vec<u8> {
+        let mut data = self.serialize();
+        // Prefix with pack header
+        let header = format!("{}{}", self.pack_type(), data.len());
+        let mut packed_data = header.into_bytes();
+        packed_data.extend_from_slice(&data);
+        packed_data
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        match self {
+            GitObject::Blob { content } => {
+                let header = format!("blob {}\0", content.len());
+                let mut data = header.into_bytes();
+                data.extend_from_slice(content);
+                data
+            }
+            GitObject::Tree { entries } => {
+                let mut content = Vec::new();
+                for entry in entries {
+                    let entry_str = format!("{} {}\0", entry.mode, entry.name);
+                    content.extend_from_slice(entry_str.as_bytes());
+                    content.extend_from_slice(&hex::decode(&entry.hash).unwrap());
+                }
+                let header = format!("tree {}\0", content.len());
+                let mut data = header.into_bytes();
+                data.extend_from_slice(&content);
+                data
+            }
+            GitObject::Commit {
+                tree,
+                parents,
+                author,
+                committer,
+                message,
+            } => {
+                let parent_str = parents.join("\n");
+                let header = format!(
+                    "commit {}\ntree {}\n{}\nauthor {}\ncommitter {}\n\n{}",
+                    parents.len(),
+                    tree,
+                    parent_str,
+                    author,
+                    committer,
+                    message
+                );
+                header.into_bytes()
+            }
+            GitObject::Tag {
+                object,
+                tag_type,
+                tagger,
+                message,
+            } => {
+                let header = format!(
+                    "tag {}\ntype {}\ntagger {}\n\n{}",
+                    object, tag_type, tagger, message
+                );
+                header.into_bytes()
+            }
+        }
+    }
 }
 
 impl Display for GitObject {
