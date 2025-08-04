@@ -17,7 +17,7 @@ git add .
 git commit -m "Initial commit"
 
 git remote add wasm http://localhost:8080
-git push -u wasm main
+GIT_TRACE_PACKET=1 GIT_TRACE_CURL=1 git push -u wasm main
 
 cd ..
 
