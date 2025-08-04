@@ -75,52 +75,8 @@ pub fn create_status_response_with_capabilities(
 }
 
 pub fn serialize_object_for_pack(obj: &crate::git::objects::GitObject) -> Result<Vec<u8>, String> {
-    use crate::utils::compression::compress_zlib;
-
-    let (obj_type, obj_data) = match obj {
-        crate::git::objects::GitObject::Blob { content } => {
-            (1u8, content.clone()) // OBJ_BLOB = 1
-        }
-        crate::git::objects::GitObject::Tree { entries } => {
-            (2u8, serialize_tree_entries(entries)?) // OBJ_TREE = 2
-        }
-        crate::git::objects::GitObject::Commit {
-            tree,
-            parents,
-            author,
-            committer,
-            message,
-        } => {
-            (
-                3u8,
-                serialize_commit_data(tree, parents, author, committer, message)?,
-            ) // OBJ_COMMIT = 3
-        }
-        crate::git::objects::GitObject::Tag {
-            object,
-            tag_type,
-            tagger,
-            message,
-        } => {
-            (4u8, serialize_tag_data(object, tag_type, tagger, message)?) // OBJ_TAG = 4
-        }
-    };
-
-    log(&format!(
-        "Object data: {}",
-        String::from_utf8_lossy(&obj_data)
-    ));
-
-    let mut result = Vec::new();
-
-    // Encode object header (type + size)
-    encode_pack_object_header(&mut result, obj_type, obj_data.len());
-
-    // Compress and add object data
-    let compressed_data = compress_zlib(&obj_data);
-    result.extend(&compressed_data);
-
-    Ok(result)
+    // Use the new centralized serialization to ensure hash consistency
+    obj.to_pack_format()
 }
 
 pub fn encode_pack_object_header(output: &mut Vec<u8>, obj_type: u8, size: usize) {
@@ -137,69 +93,7 @@ pub fn encode_pack_object_header(output: &mut Vec<u8>, obj_type: u8, size: usize
     output.push(byte); // Final byte with MSB = 0
 }
 
-fn serialize_tree_entries(entries: &[crate::git::objects::TreeEntry]) -> Result<Vec<u8>, String> {
-    let mut data = Vec::new();
-
-    for entry in entries {
-        // Format: "<mode> <name>\0<20-byte-hash>"
-        data.extend(entry.mode.as_bytes());
-        data.push(b' ');
-        data.extend(entry.name.as_bytes());
-        data.push(0); // null terminator
-
-        // Convert hex hash to binary
-        let hash_bytes =
-            hex::decode(&entry.hash).map_err(|_| format!("Invalid hash: {}", entry.hash))?;
-        if hash_bytes.len() != 20 {
-            return Err(format!("Invalid hash length: {}", entry.hash));
-        }
-        data.extend(&hash_bytes);
-    }
-
-    Ok(data)
-}
-
-fn serialize_commit_data(
-    tree: &str,
-    parents: &[String],
-    author: &str,
-    committer: &str,
-    message: &str,
-) -> Result<Vec<u8>, String> {
-    let mut data = Vec::new();
-
-    // Format: "tree <hash>\nauthor <author>\ncommitter <committer>\n\n<message>"
-    data.extend(format!("tree {}\n", tree).as_bytes());
-
-    for parent_hash in parents {
-        data.extend(format!("parent {}\n", parent_hash).as_bytes());
-    }
-
-    data.extend(format!("author {}\n", author).as_bytes());
-    data.extend(format!("committer {}\n", committer).as_bytes());
-    data.extend(b"\n"); // blank line before message
-    data.extend(message.as_bytes());
-
-    Ok(data)
-}
-
-fn serialize_tag_data(
-    object: &str,
-    tag_type: &str,
-    tagger: &str,
-    message: &str,
-) -> Result<Vec<u8>, String> {
-    let mut data = Vec::new();
-
-    data.extend(format!("object {}\n", object).as_bytes());
-    data.extend(format!("type {}\n", tag_type).as_bytes());
-    // Note: tag name would need to be stored separately in GitObject::Tag if needed
-    data.extend(format!("tagger {}\n", tagger).as_bytes());
-    data.extend(b"\n");
-    data.extend(message.as_bytes());
-
-    Ok(data)
-}
+// Old serialization functions removed - now using centralized GitObject serialization
 
 // ============================================================================
 // Packet utilities
@@ -227,4 +121,3 @@ pub fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
 pub fn encode_status_message(message: &[u8]) -> Vec<u8> {
     encode_sideband_data(1, message) // Band 1 = status messages
 }
-
