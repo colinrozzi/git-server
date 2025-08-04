@@ -6,6 +6,8 @@ use crate::git::repository::GitRepoState;
 use crate::utils::logging::safe_log as log;
 
 const CAPABILITIES: &str = "report-status delete-refs ofs-delta agent=git-server/0.1.0";
+const MAX_PKT_PAYLOAD: usize = 0xFFF0 - 4; // pkt-line payload limit = 65 516
+const MAX_SIDEBAND_DATA: usize = MAX_PKT_PAYLOAD - 1; // minus 1-byte channel
 
 /// Handle GET /info/refs - Support both Protocol v1 and v2
 pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpResponse {
@@ -420,47 +422,31 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
 
             let mut response = Vec::new();
 
-            // Protocol v2 fetch response always needs ACK/NAK section
-            log("Sending acknowledgments section");
-            response.extend(encode_pkt_line(b"acknowledgments\n"));
-            if has_done {
-                // Client sent 'done', so we can send NAK and proceed to packfile
-                response.extend(encode_pkt_line(b"NAK\n"));
-            } else {
-                // Negotiation continuing - send NAK for now (proper negotiation would require more logic)
-                response.extend(encode_pkt_line(b"NAK\n"));
+            /* ----- 1.  acknowledgments  (only when !has_done) ----- */
+            if !has_done {
+                response.extend(encode_pkt_line(b"acknowledgments\n"));
+                response.extend(encode_pkt_line(b"NAK\n")); // or real ACK/ready lines
+                response.extend(b"0001"); // delim-pkt -> next section
             }
-            // Delimiter to end acknowledgments section
-            response.extend(b"0001");
-
-            // Start packfile section with delimiter
-            log("Starting packfile section");
-            response.extend(b"0001"); // Delimiter packet to start packfile section
 
             // Packfile section header
             response.extend(encode_pkt_line(b"packfile\n"));
 
-            // Send packfile data in sideband format (channel 1 = pack data)
-            if packfile.is_empty() {
-                log("Warning: Empty packfile generated");
-            } else {
-                let mut pos = 0;
-                let mut chunk_count = 0;
-                while pos < packfile.len() {
-                    let chunk_size = std::cmp::min(65519, packfile.len() - pos); // 64K-1 for sideband byte
-                    let chunk = &packfile[pos..pos + chunk_size];
-                    response.extend(encode_sideband_data(1, chunk)); // Channel 1 = pack data
-                    pos += chunk_size;
-                    chunk_count += 1;
-                }
-                log(&format!("Sent packfile in {} sideband chunks", chunk_count));
+            /* ----- 3.  side-band-encode the pack ----- */
+            let mut pos = 0;
+            while pos < packfile.len() {
+                let chunk_size = std::cmp::min(MAX_SIDEBAND_DATA, packfile.len() - pos); // 65 515
+                let chunk = &packfile[pos..pos + chunk_size];
+                // Pre-pend ASCII '1' (0x31) – channel 1 = data
+                let mut sideband = Vec::with_capacity(1 + chunk.len());
+                sideband.push(b'1');
+                sideband.extend_from_slice(chunk);
+                response.extend(encode_pkt_line(&sideband));
+                pos += chunk_size;
             }
 
             // End packfile section with flush packet
             response.extend(encode_flush_pkt()); // 0000 - end of response
-
-            // Optional response-end packet for stateless HTTP
-            response.extend(b"0002"); // Response-end packet
 
             log(&format!("Total response size: {} bytes", response.len()));
             create_response(200, "application/x-git-upload-pack-result", &response)
