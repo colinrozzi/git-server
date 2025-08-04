@@ -432,37 +432,71 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
         "Parsing command request, data length: {} bytes",
         data.len()
     ));
+    
+    // Debug: log the raw data
+    log(&format!("Raw data: {:?}", data));
+    log(&format!("Raw data as string: {:?}", String::from_utf8_lossy(data)));
 
     let mut lines = Vec::new();
     let mut pos = 0;
 
     while pos < data.len() {
         if pos + 4 > data.len() {
+            log(&format!("Breaking: remaining {} bytes < 4", data.len() - pos));
             break;
         }
 
-        let len_str = std::str::from_utf8(&data[pos..pos + 4]).map_err(|_| "Invalid packet")?;
-        let len = u16::from_str_radix(len_str, 16).map_err(|_| "Invalid packet length")?;
+        let len_bytes = &data[pos..pos + 4];
+        log(&format!("Length bytes at pos {}: {:?}", pos, len_bytes));
+        
+        let len_str = std::str::from_utf8(len_bytes).map_err(|e| {
+            log(&format!("UTF-8 error in length: {}", e));
+            "Invalid packet"
+        })?;
+        
+        log(&format!("Length string: '{}'", len_str));
+        
+        let len = u16::from_str_radix(len_str, 16).map_err(|e| {
+            log(&format!("Hex parse error: {}, string was: '{}'", e, len_str));
+            "Invalid packet length"
+        })?;
+        
+        log(&format!("Parsed length: {}", len));
 
         if len == 0 {
+            log("Found flush packet (0000), ending");
             pos += 4;
             break;
         }
+        
+        if len == 1 {
+            log("Found delimiter packet (0001), continuing");
+            pos += 4;
+            continue;
+        }
 
-        if len < 4 || pos + len as usize > data.len() {
-            return Err("Invalid packet".to_string());
+        if len < 4 {
+            return Err(format!("Invalid packet length: {} (must be >= 4)", len));
+        }
+        
+        if pos + len as usize > data.len() {
+            return Err(format!("Packet extends beyond data: need {} bytes, have {}", len, data.len() - pos));
         }
 
         let content = &data[pos + 4..pos + len as usize];
         let line = std::str::from_utf8(content)
-            .map_err(|_| "Invalid UTF-8")?
+            .map_err(|e| format!("Invalid UTF-8 in packet content: {}", e))?
             .trim_end_matches('\n');
 
+        log(&format!("Parsed line: '{}'", line));
+        
         if !line.is_empty() {
             lines.push(line.to_string());
         }
         pos += len as usize;
     }
+
+    log(&format!("Total parsed lines: {:?}", lines));
 
     if lines.is_empty() {
         return Err("No command found in request".to_string());
@@ -476,6 +510,7 @@ fn parse_command_request(data: &[u8]) -> Result<CommandRequest, String> {
     };
 
     log(&format!("Parsed command: '{}'", command));
+    log(&format!("Command args: {:?}", &lines[1..]));
 
     Ok(CommandRequest {
         command,
