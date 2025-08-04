@@ -40,7 +40,7 @@ fn handle_upload_pack_info_refs() -> HttpResponse {
     response_data.extend(encode_pkt_line(b"server-option\n"));
     response_data.extend(encode_pkt_line(b"ls-refs=symrefs peel ref-prefix unborn\n"));
     response_data.extend(encode_pkt_line(
-        b"fetch=shallow thin-pack no-progress include-tag ofs-delta sideband-all wait-for-done\n",
+        b"fetch=shallow thin-pack no-progress include-tag ofs-delta wait-for-done\n",
     ));
     response_data.extend(encode_pkt_line(b"object-info=size\n"));
     response_data.extend(encode_flush_pkt());
@@ -410,8 +410,8 @@ fn handle_fetch(repo_state: &GitRepoState, request: &CommandRequest) -> HttpResp
     // Generate packfile for wanted objects
     match generate_packfile_for_wants(repo_state, &wants) {
         Ok(packfile) => {
-            // Send packfile in band 1 (pack data)
-            response.extend(encode_sideband_data(1, &packfile));
+            // Send packfile directly (no sideband)
+            response.extend(&packfile);
             response.extend(encode_flush_pkt());
             
             create_response(200, "application/x-git-upload-pack-result", &response)

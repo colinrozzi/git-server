@@ -40,7 +40,7 @@ pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpR
             // Clone/pull operations capabilities
             response_data.extend(encode_pkt_line_fixed(b"server-option\n"));
             response_data.extend(encode_pkt_line_fixed(b"ls-refs=symrefs peel ref-prefix unborn\n"));
-            response_data.extend(encode_pkt_line_fixed(b"fetch=shallow thin-pack no-progress include-tag ofs-delta sideband-all wait-for-done\n"));
+            response_data.extend(encode_pkt_line_fixed(b"fetch=shallow thin-pack no-progress include-tag ofs-delta wait-for-done\n"));
             response_data.extend(encode_pkt_line_fixed(b"object-info=size\n"));
         }
     }
