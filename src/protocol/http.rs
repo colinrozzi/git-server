@@ -3,21 +3,9 @@
 
 use crate::bindings::theater::simple::http_types::{HttpRequest, HttpResponse};
 use crate::git::repository::GitRepoState;
-use crate::protocol::protocol_v2_parser::ProtocolV2Parser;
 use crate::utils::logging::safe_log as log;
 
-// ============================================================================
-// PROTOCOL CONSTANTS
-// ============================================================================
-
-pub const PROTOCOL_VERSION: &str = "version 2";
-pub const FLUSH_PKT: &[u8] = b"0000";
-pub const DELIM_PKT: &[u8] = b"0001";
-pub const RESPONSE_END_PKT: &[u8] = b"0002";
-
-// ============================================================================
-// MAIN PROTOCOL HANDLERS - FIXED FOR DUAL PROTOCOL SUPPORT
-// ============================================================================
+const CAPABILITIES: &str = "report-status delete-refs ofs-delta agent=git-server/0.1.0";
 
 /// Handle GET /info/refs - Support both Protocol v1 and v2
 pub fn handle_smart_info_refs(repo_state: &GitRepoState, service: &str) -> HttpResponse {
@@ -80,11 +68,9 @@ fn handle_receive_pack_info_refs_v1(repo_state: &GitRepoState) -> HttpResponse {
     // Protocol v1 format - advertise refs first, then capabilities
     if repo_state.refs.is_empty() {
         // Empty repository - advertise capabilities on the null ref
-        let capabilities =
-            "report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git-server/0.1.0";
         let line = format!(
             "0000000000000000000000000000000000000000 capabilities^{{}}\0{}\n",
-            capabilities
+            CAPABILITIES
         );
         response_data.extend(encode_pkt_line(line.as_bytes()));
     } else {
@@ -96,8 +82,7 @@ fn handle_receive_pack_info_refs_v1(repo_state: &GitRepoState) -> HttpResponse {
         for (ref_name, hash) in refs {
             if first_ref {
                 // First ref includes capabilities
-                let capabilities = "report-status delete-refs side-band-64k quiet atomic ofs-delta agent=git-server/0.1.0";
-                let line = format!("{} {}\0{}\n", hash, ref_name, capabilities);
+                let line = format!("{} {}\0{}\n", hash, ref_name, CAPABILITIES);
                 response_data.extend(encode_pkt_line(line.as_bytes()));
                 first_ref = false;
             } else {
@@ -164,7 +149,7 @@ pub fn handle_receive_pack_request(
         Err(e) => {
             // For parse errors, we don't have capabilities yet, so use basic response
             create_status_response(false, vec![format!("unpack {}", e)])
-        },
+        }
     }
 }
 
@@ -224,14 +209,12 @@ fn parse_v1_receive_pack_request(data: &[u8]) -> Result<V1PushRequest, String> {
             if let Some(null_pos) = line.find('\0') {
                 let ref_part = &line[..null_pos];
                 let cap_part = &line[null_pos + 1..];
-                
+
                 // Parse capabilities
-                capabilities = cap_part.split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
-                    
+                capabilities = cap_part.split_whitespace().map(|s| s.to_string()).collect();
+
                 log(&format!("Parsed capabilities: {:?}", capabilities));
-                
+
                 // Parse ref update from the part before null
                 let parts: Vec<&str> = ref_part.split_whitespace().collect();
                 if parts.len() >= 3 {
@@ -324,7 +307,11 @@ fn handle_v1_push(repo_state: &mut GitRepoState, push: V1PushRequest) -> HttpRes
                 .collect();
             create_status_response_with_capabilities(true, ref_statuses, &push.capabilities)
         }
-        Err(e) => create_status_response_with_capabilities(false, vec![format!("unpack {}", e)], &push.capabilities),
+        Err(e) => create_status_response_with_capabilities(
+            false,
+            vec![format!("unpack {}", e)],
+            &push.capabilities,
+        ),
     }
 }
 
@@ -472,6 +459,7 @@ pub fn create_response(status: u16, content_type: &str, body: &[u8]) -> HttpResp
         ("Content-Type".to_string(), content_type.to_string()),
         ("Content-Length".to_string(), body.len().to_string()),
         ("Cache-Control".to_string(), "no-cache".to_string()),
+        ("Connection".to_string(), "close".to_string()),
     ];
 
     HttpResponse {
@@ -494,25 +482,28 @@ pub fn create_status_response(success: bool, ref_statuses: Vec<String>) -> HttpR
 }
 
 pub fn create_status_response_with_capabilities(
-    success: bool, 
+    success: bool,
     ref_statuses: Vec<String>,
-    capabilities: &[String]
+    capabilities: &[String],
 ) -> HttpResponse {
     let mut data = Vec::new();
     let use_sideband = capabilities.contains(&"side-band-64k".to_string());
-    
-    log(&format!("Creating status response with sideband: {}", use_sideband));
 
-    // Unpack status  
+    log(&format!(
+        "Creating status response with sideband: {}",
+        use_sideband
+    ));
+
+    // Unpack status
     if success {
         if use_sideband {
-            data.extend(encode_progress_message(b"unpack ok\n"));
+            data.extend(encode_status_message(b"unpack ok\n"));
         } else {
             data.extend(encode_pkt_line(b"unpack ok\n"));
         }
     } else {
         if use_sideband {
-            data.extend(encode_progress_message(b"unpack failed\n"));
+            data.extend(encode_status_message(b"unpack failed\n"));
         } else {
             data.extend(encode_pkt_line(b"unpack failed\n"));
         }
@@ -522,7 +513,7 @@ pub fn create_status_response_with_capabilities(
     for status in ref_statuses {
         let line = format!("{}\n", status);
         if use_sideband {
-            data.extend(encode_progress_message(line.as_bytes()));
+            data.extend(encode_status_message(line.as_bytes()));
         } else {
             data.extend(encode_pkt_line(line.as_bytes()));
         }
@@ -545,14 +536,19 @@ fn encode_flush_pkt() -> Vec<u8> {
 }
 
 // Sideband encoding functions
-fn encode_sideband_data(band: u8, data: &[u8]) -> Vec<u8> {
-    let total_len = data.len() + 5; // 4 bytes length + 1 byte band + data
-    let mut result = format!("{:04x}", total_len).into_bytes();
-    result.push(band);
-    result.extend_from_slice(data);
-    result
+fn encode_sideband_data(band: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 1 + payload.len());
+    let len_total = 4 /*header*/ + 1 /*band*/ + payload.len();
+    out.extend(format!("{len_total:04x}").as_bytes()); // <-- include the 4 bytes!
+    out.push(band);
+    out.extend(payload);
+    out
 }
 
 fn encode_progress_message(message: &[u8]) -> Vec<u8> {
     encode_sideband_data(2, message) // Band 2 = progress/status messages
+}
+
+fn encode_status_message(message: &[u8]) -> Vec<u8> {
+    encode_sideband_data(1, message) // Band 1 = status messages
 }
