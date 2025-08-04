@@ -340,7 +340,7 @@ impl GitRepoState {
         for obj_id in object_ids {
             if let Some(obj) = self.objects.get(obj_id) {
                 log(&format!("Processing object: {}", obj));
-                let obj_data = serialize_object_for_pack(obj)?;
+                let obj_data = obj.serialize_for_pack()?;
                 pack.extend(&obj_data);
             } else {
                 return Err(format!("Object not found: {}", obj_id));
